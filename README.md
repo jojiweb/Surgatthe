@@ -1,0 +1,3 @@
+- 👋 Hi, I’m @Surgatthe
+- 👀 I’m interested in live from programming
+- 🌱 I’m currently learning html, css
