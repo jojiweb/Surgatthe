@@ -1,0 +1,320 @@
+// Schema completo das 3 etapas do sistema.
+// Etapa 1 (atual): UI para Member, Obra, ObraService, DayLog/*, Budget, ObraPhoto.
+// Etapa 2 (futuro): UI para Absence, Payment.
+// Etapa 3 (futuro): UI para Etapa, ObraNote, ServicePriceTable + login por membro.
+// As tabelas das etapas 2 e 3 ja existem para evitar migrations conflitantes.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------
+
+enum Role {
+  ADMIN
+  WORKER
+  CLIENT
+}
+
+enum ObraStatus {
+  ORCAMENTO
+  EM_ANDAMENTO
+  PAUSADA
+  CONCLUIDA
+}
+
+enum EtapaStatus {
+  PENDENTE
+  EM_ANDAMENTO
+  CONCLUIDA
+}
+
+enum PhotoAlbum {
+  ANTES
+  DURANTE
+  DEPOIS
+}
+
+// ---------------------------------------------------------------------
+// Membro da equipe (NAO eh a conta de login).
+// authUserId fica nulo enquanto o login eh compartilhado; sera preenchido
+// na Etapa 3 quando cada membro tiver login proprio.
+// ---------------------------------------------------------------------
+
+model Member {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  authUserId String?  @unique @db.Uuid
+  name       String
+  email      String?
+  role       Role     @default(ADMIN)
+  dailyRate  Float    @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  workers  DayLogWorker[]
+  absences Absence[]
+  payments Payment[]
+  etapas   Etapa[]        @relation("EtapaResponsible")
+}
+
+// ---------------------------------------------------------------------
+// Obra
+// ---------------------------------------------------------------------
+
+model Obra {
+  id              String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  clientName      String
+  address         String
+  startDate       DateTime?
+  expectedEndDate DateTime?
+  status          ObraStatus @default(ORCAMENTO)
+  companyName     String     @default("FG Construcoes & Reformas")
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  services       ObraService[]
+  etapas         Etapa[]
+  dayLogEntries  DayLogEntry[]
+  dayLogExpenses DayLogExpense[]
+  notes          ObraNote[]
+  photos         ObraPhoto[]
+  budgets        Budget[]
+  absences       Absence[]
+  payments       Payment[]
+}
+
+model ObraService {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  obraId       String   @db.Uuid
+  type         String
+  totalM2      Float
+  completedM2  Float    @default(0)
+  pricePerM2   Float
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  obra     Obra                      @relation(fields: [obraId], references: [id], onDelete: Cascade)
+  progress DayLogServiceProgress[]
+
+  @@index([obraId])
+}
+
+// ---------------------------------------------------------------------
+// Etapa (checklist da obra) - UI na Etapa 3
+// ---------------------------------------------------------------------
+
+model Etapa {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  obraId        String      @db.Uuid
+  name          String
+  status        EtapaStatus @default(PENDENTE)
+  responsibleId String?     @db.Uuid
+  expectedDate  DateTime?
+  order         Int         @default(0)
+
+  obra        Obra    @relation(fields: [obraId], references: [id], onDelete: Cascade)
+  responsible Member? @relation("EtapaResponsible", fields: [responsibleId], references: [id])
+
+  @@index([obraId])
+}
+
+// ---------------------------------------------------------------------
+// DayLog (registro diario - "adicionar dia")
+// ---------------------------------------------------------------------
+
+model DayLog {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  date      DateTime
+  notes     String?
+  createdAt DateTime @default(now())
+
+  entries  DayLogEntry[]
+  expenses DayLogExpense[]
+  photos   ObraPhoto[]
+
+  @@index([date])
+}
+
+// Uma entrada por obra dentro do dia. Suporta dia dividido entre 2 obras.
+// fraction: porcentagem do dia dedicada a esta obra (soma das fractions
+// de um mesmo DayLog deve ser 1.0).
+// dailyRateSnapshot: diaria vigente no momento do registro. Congelar
+// aqui garante que mudar Member.dailyRate depois NAO altera dias passados.
+model DayLogEntry {
+  id                String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  dayLogId          String @db.Uuid
+  obraId            String @db.Uuid
+  fraction          Float  @default(1.0)
+  dailyRateSnapshot Float
+
+  dayLog          DayLog                  @relation(fields: [dayLogId], references: [id], onDelete: Cascade)
+  obra            Obra                    @relation(fields: [obraId], references: [id], onDelete: Cascade)
+  workers         DayLogWorker[]
+  serviceProgress DayLogServiceProgress[]
+
+  @@index([dayLogId])
+  @@index([obraId])
+}
+
+// Pivo: quais Members trabalharam nessa entrada (Alexandre / Fabio / ambos).
+model DayLogWorker {
+  id            String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  dayLogEntryId String @db.Uuid
+  memberId      String @db.Uuid
+
+  dayLogEntry DayLogEntry @relation(fields: [dayLogEntryId], references: [id], onDelete: Cascade)
+  member      Member      @relation(fields: [memberId], references: [id], onDelete: Restrict)
+
+  @@unique([dayLogEntryId, memberId])
+  @@index([memberId])
+}
+
+// Metros completados por servico naquele dia. completedM2 do ObraService
+// eh recalculado como SUM(metersCompleted) apos cada save/edit/delete de DayLog.
+model DayLogServiceProgress {
+  id               String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  dayLogEntryId    String @db.Uuid
+  obraServiceId    String @db.Uuid
+  metersCompleted  Float
+
+  dayLogEntry DayLogEntry @relation(fields: [dayLogEntryId], references: [id], onDelete: Cascade)
+  obraService ObraService @relation(fields: [obraServiceId], references: [id], onDelete: Cascade)
+
+  @@index([obraServiceId])
+}
+
+// Gastos do dia. obraId opcional (gasto pode nao ser vinculado a uma obra).
+model DayLogExpense {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  dayLogId    String   @db.Uuid
+  obraId      String?  @db.Uuid
+  description String
+  value       Float
+  createdAt   DateTime @default(now())
+
+  dayLog DayLog @relation(fields: [dayLogId], references: [id], onDelete: Cascade)
+  obra   Obra?  @relation(fields: [obraId], references: [id], onDelete: SetNull)
+
+  @@index([dayLogId])
+}
+
+// ---------------------------------------------------------------------
+// Absence (faltas) - UI na Etapa 2
+// ---------------------------------------------------------------------
+
+model Absence {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  memberId      String   @db.Uuid
+  obraId        String   @db.Uuid
+  date          DateTime
+  notes         String?
+  discountValue Float    @default(0)
+  createdAt     DateTime @default(now())
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  obra   Obra   @relation(fields: [obraId], references: [id], onDelete: Cascade)
+
+  @@index([memberId])
+  @@index([obraId])
+}
+
+// ---------------------------------------------------------------------
+// Payment (pagamentos) - UI na Etapa 2
+// ---------------------------------------------------------------------
+
+model Payment {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  memberId          String   @db.Uuid
+  obraId            String   @db.Uuid
+  amount            Float
+  paymentDate       DateTime
+  periodDescription String
+  notes             String?
+  createdAt         DateTime @default(now())
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  obra   Obra   @relation(fields: [obraId], references: [id], onDelete: Cascade)
+
+  @@index([memberId])
+  @@index([obraId])
+}
+
+// ---------------------------------------------------------------------
+// ObraNote (notas colaborativas) - UI na Etapa 3
+// ---------------------------------------------------------------------
+
+model ObraNote {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  obraId    String   @db.Uuid
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  obra Obra @relation(fields: [obraId], references: [id], onDelete: Cascade)
+
+  @@index([obraId])
+}
+
+// ---------------------------------------------------------------------
+// ObraPhoto - UI na Etapa 1
+// storagePath: caminho relativo dentro do bucket privado "obra-fotos".
+// dayLogId: preenchido quando a foto eh enviada via "Adicionar Dia".
+// ---------------------------------------------------------------------
+
+model ObraPhoto {
+  id          String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  obraId      String     @db.Uuid
+  storagePath String
+  album       PhotoAlbum
+  isPortfolio Boolean    @default(false)
+  caption     String?
+  dayLogId    String?    @db.Uuid
+  createdAt   DateTime   @default(now())
+
+  obra   Obra    @relation(fields: [obraId], references: [id], onDelete: Cascade)
+  dayLog DayLog? @relation(fields: [dayLogId], references: [id], onDelete: SetNull)
+
+  @@index([obraId])
+  @@index([album])
+}
+
+// ---------------------------------------------------------------------
+// Budget (orcamento) - UI na Etapa 1.
+// VARIOS orcamentos por obra, sem limite. Sem calculadora, sem PDF.
+// Apenas registro manual do que sera cobrado.
+// ---------------------------------------------------------------------
+
+model Budget {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  obraId        String   @db.Uuid
+  title         String
+  description   String?
+  laborTotal    Float?
+  materialTotal Float?
+  totalValue    Float
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  obra Obra @relation(fields: [obraId], references: [id], onDelete: Cascade)
+
+  @@index([obraId])
+}
+
+// ---------------------------------------------------------------------
+// ServicePriceTable - UI na Etapa 3
+// ---------------------------------------------------------------------
+
+model ServicePriceTable {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  serviceType         String   @unique
+  defaultPricePerM2   Float
+  updatedAt           DateTime @updatedAt
+}
