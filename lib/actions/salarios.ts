@@ -1,5 +1,6 @@
 "use server";
 
+import { Member } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/auth";
 
@@ -44,8 +45,20 @@ export async function calculateSalary(
   range?: { from?: Date; to?: Date }
 ): Promise<SalaryResult> {
   await requireUser();
-
   const member = await prisma.member.findUniqueOrThrow({ where: { id: memberId } });
+  return computeSalary(member, range);
+}
+
+/**
+ * Nucleo do calculo. Recebe o Member ja carregado (evita uma query extra)
+ * e NAO revalida auth - quem chama (entry point) ja fez requireUser().
+ * Permite que getAllMembersSalaries calcule todos em paralelo.
+ */
+async function computeSalary(
+  member: Member,
+  range?: { from?: Date; to?: Date }
+): Promise<SalaryResult> {
+  const memberId = member.id;
 
   const dateFilter =
     range?.from || range?.to
@@ -154,9 +167,6 @@ export async function calculateSalary(
 export async function getAllMembersSalaries(range?: { from?: Date; to?: Date }) {
   await requireUser();
   const members = await prisma.member.findMany({ orderBy: { name: "asc" } });
-  const results: SalaryResult[] = [];
-  for (const m of members) {
-    results.push(await calculateSalary(m.id, range));
-  }
-  return results;
+  // Calcula todos os membros em PARALELO (antes era serial com await em loop).
+  return Promise.all(members.map((m) => computeSalary(m, range)));
 }
