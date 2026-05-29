@@ -89,19 +89,21 @@ model Obra {
   budgets        Budget[]
   absences       Absence[]
   payments       Payment[]
+
+  @@index([status])
 }
 
 model ObraService {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  obraId       String   @db.Uuid
-  type         String
-  totalM2      Float
-  completedM2  Float    @default(0)
-  pricePerM2   Float
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  obraId      String   @db.Uuid
+  type        String
+  totalM2     Float
+  completedM2 Float    @default(0)
+  pricePerM2  Float
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  obra     Obra                      @relation(fields: [obraId], references: [id], onDelete: Cascade)
+  obra     Obra                    @relation(fields: [obraId], references: [id], onDelete: Cascade)
   progress DayLogServiceProgress[]
 
   @@index([obraId])
@@ -175,15 +177,16 @@ model DayLogWorker {
 
   @@unique([dayLogEntryId, memberId])
   @@index([memberId])
+  @@index([dayLogEntryId])
 }
 
 // Metros completados por servico naquele dia. completedM2 do ObraService
 // eh recalculado como SUM(metersCompleted) apos cada save/edit/delete de DayLog.
 model DayLogServiceProgress {
-  id               String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  dayLogEntryId    String @db.Uuid
-  obraServiceId    String @db.Uuid
-  metersCompleted  Float
+  id              String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  dayLogEntryId   String @db.Uuid
+  obraServiceId   String @db.Uuid
+  metersCompleted Float
 
   dayLogEntry DayLogEntry @relation(fields: [dayLogEntryId], references: [id], onDelete: Cascade)
   obraService ObraService @relation(fields: [obraServiceId], references: [id], onDelete: Cascade)
@@ -224,6 +227,7 @@ model Absence {
 
   @@index([memberId])
   @@index([obraId])
+  @@index([memberId, date])
 }
 
 // ---------------------------------------------------------------------
@@ -245,6 +249,7 @@ model Payment {
 
   @@index([memberId])
   @@index([obraId])
+  @@index([memberId, paymentDate])
 }
 
 // ---------------------------------------------------------------------
@@ -313,8 +318,8 @@ model Budget {
 // ---------------------------------------------------------------------
 
 model ServicePriceTable {
-  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  serviceType         String   @unique
-  defaultPricePerM2   Float
-  updatedAt           DateTime @updatedAt
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  serviceType       String   @unique
+  defaultPricePerM2 Float
+  updatedAt         DateTime @updatedAt
 }

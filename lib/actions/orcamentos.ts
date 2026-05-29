@@ -1,9 +1,10 @@
 "use server";
 
 import { z } from "zod";
-import { revalidatePath } from "next/cache";
+import { revalidateTag } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/auth";
+import { TAGS } from "@/lib/data/cache";
 
 const BudgetSchema = z.object({
   obraId: z.string().uuid(),
@@ -29,7 +30,7 @@ export async function createBudget(input: BudgetInput) {
       totalValue: data.totalValue,
     },
   });
-  revalidatePath(`/obras/${data.obraId}`);
+  revalidateTag(TAGS.obra(data.obraId));
 }
 
 export async function updateBudget(id: string, input: BudgetInput) {
@@ -45,11 +46,11 @@ export async function updateBudget(id: string, input: BudgetInput) {
       totalValue: data.totalValue,
     },
   });
-  revalidatePath(`/obras/${data.obraId}`);
+  revalidateTag(TAGS.obra(data.obraId));
 }
 
 export async function deleteBudget(id: string) {
   await requireUser();
   const b = await prisma.budget.delete({ where: { id } });
-  revalidatePath(`/obras/${b.obraId}`);
+  revalidateTag(TAGS.obra(b.obraId));
 }

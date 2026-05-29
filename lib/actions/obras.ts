@@ -1,11 +1,12 @@
 "use server";
 
 import { z } from "zod";
-import { revalidatePath } from "next/cache";
+import { revalidateTag } from "next/cache";
 import { redirect } from "next/navigation";
-import { ObraStatus, Prisma } from "@prisma/client";
+import { ObraStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/auth";
+import { TAGS } from "@/lib/data/cache";
 
 const ObraServiceSchema = z.object({
   id: z.string().uuid().optional(),
@@ -52,8 +53,7 @@ export async function createObra(input: ObraInput) {
       },
     },
   });
-  revalidatePath("/obras");
-  revalidatePath("/");
+  revalidateTag(TAGS.obras);
   redirect(`/obras/${obra.id}`);
 }
 
@@ -103,41 +103,15 @@ export async function updateObra(id: string, input: ObraInput) {
     }
   });
 
-  revalidatePath(`/obras/${id}`);
-  revalidatePath("/obras");
-  revalidatePath("/");
+  revalidateTag(TAGS.obras);
+  revalidateTag(TAGS.obra(id));
   redirect(`/obras/${id}`);
 }
 
 export async function deleteObra(id: string) {
   await requireUser();
   await prisma.obra.delete({ where: { id } });
-  revalidatePath("/obras");
-  revalidatePath("/");
+  revalidateTag(TAGS.obras);
+  revalidateTag(TAGS.obra(id));
   redirect("/obras");
-}
-
-export async function getObras(filter?: { status?: ObraStatus }) {
-  await requireUser();
-  const where: Prisma.ObraWhereInput = {};
-  if (filter?.status) where.status = filter.status;
-  return prisma.obra.findMany({
-    where,
-    include: {
-      services: true,
-      _count: { select: { dayLogEntries: true, photos: true, budgets: true } },
-    },
-    orderBy: { createdAt: "desc" },
-  });
-}
-
-export async function getObraById(id: string) {
-  await requireUser();
-  return prisma.obra.findUnique({
-    where: { id },
-    include: {
-      services: { orderBy: { createdAt: "asc" } },
-      budgets: { orderBy: { createdAt: "desc" } },
-    },
-  });
 }

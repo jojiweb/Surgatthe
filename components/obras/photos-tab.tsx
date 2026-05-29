@@ -1,9 +1,8 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import Image from "next/image";
 import { PhotoAlbum } from "@prisma/client";
-import { Upload, Trash2, Star, X, Loader2 } from "lucide-react";
+import { Upload, Trash2, Star, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,16 +14,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Dialog,
-  DialogContent,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { createClient } from "@/lib/supabase/browser";
-import { compressImage } from "@/lib/image-compression";
-import { uploadPhotoFromBrowser } from "@/lib/storage";
+import { uploadPhotos } from "@/lib/upload-photos";
 import { toast } from "@/lib/hooks/use-toast";
 import {
-  createPhotoRecord,
+  createPhotosBatch,
   deletePhotoById,
   togglePortfolio,
 } from "@/lib/actions/fotos";
@@ -35,7 +30,8 @@ type Photo = {
   album: PhotoAlbum;
   caption: string | null;
   isPortfolio: boolean;
-  signedUrl: string | null;
+  thumbUrl: string | null;
+  fullUrl: string | null;
 };
 
 const ALBUM_LABELS: Record<PhotoAlbum, string> = {
@@ -73,18 +69,19 @@ export function PhotosTab({
     setProgress({ done: 0, total: arr.length });
     const supabase = createClient();
     try {
-      for (let i = 0; i < arr.length; i++) {
-        const compressed = await compressImage(arr[i]);
-        const { path } = await uploadPhotoFromBrowser(supabase, obraId, compressed);
-        await createPhotoRecord({
-          obraId,
-          storagePath: path,
-          album: selectedAlbum,
-          caption: caption || null,
-          isPortfolio: false,
-        });
-        setProgress({ done: i + 1, total: arr.length });
-      }
+      // Upload paralelo (pool 3) com geracao de thumb por foto.
+      const uploaded = await uploadPhotos(supabase, obraId, arr, {
+        concurrency: 3,
+        onProgress: (done, total) => setProgress({ done, total }),
+      });
+      // Insert em batch (uma roundtrip ao banco em vez de N).
+      await createPhotosBatch({
+        obraId,
+        album: selectedAlbum,
+        caption: caption || null,
+        isPortfolio: false,
+        storagePaths: uploaded.map((u) => u.storagePath),
+      });
       toast({ title: `${arr.length} foto(s) enviada(s)` });
       setFiles(null);
       setCaption("");
@@ -180,10 +177,11 @@ export function PhotosTab({
 
       <Dialog open={!!viewing} onOpenChange={(o) => !o && setViewing(null)}>
         <DialogContent className="max-w-4xl p-0 bg-black">
-          {viewing?.signedUrl && (
+          {viewing?.fullUrl && (
             <div className="relative">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={viewing.signedUrl}
+                src={viewing.fullUrl}
                 alt={viewing.caption ?? ""}
                 className="w-full max-h-[85vh] object-contain"
               />
@@ -236,13 +234,15 @@ function PhotoTile({ photo, onView }: { photo: Photo; onView: () => void }) {
 
   return (
     <div className="relative group aspect-square rounded-md overflow-hidden bg-muted">
-      {photo.signedUrl ? (
+      {photo.thumbUrl ? (
         <button onClick={onView} className="w-full h-full">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={photo.signedUrl}
+            src={photo.thumbUrl}
             alt={photo.caption ?? ""}
             className="w-full h-full object-cover"
             loading="lazy"
+            decoding="async"
           />
         </button>
       ) : (

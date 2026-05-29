@@ -11,36 +11,23 @@ import { BudgetsTab } from "@/components/obras/budgets-tab";
 import { DaysTab } from "@/components/obras/days-tab";
 import { PhotosTab } from "@/components/obras/photos-tab";
 import { StatusBadge } from "@/components/obras/status-badge";
-import { getObraById } from "@/lib/actions/obras";
-import { getDayLogsByObra } from "@/lib/actions/dias";
-import { prisma } from "@/lib/prisma";
-import { getSignedUrls } from "@/lib/storage";
-
-export const dynamic = "force-dynamic";
+import { requireUser } from "@/lib/auth";
+import { getObraByIdCached } from "@/lib/data/obras";
+import { getDayLogsByObraCached } from "@/lib/data/dias";
+import { getObraPhotosCached } from "@/lib/data/fotos";
 
 export default async function ObraDetailPage({
   params,
 }: {
   params: { id: string };
 }) {
-  const obra = await getObraById(params.id);
-  if (!obra) notFound();
-
-  const [dayEntries, photos] = await Promise.all([
-    getDayLogsByObra(obra.id),
-    prisma.obraPhoto.findMany({
-      where: { obraId: obra.id },
-      orderBy: { createdAt: "desc" },
-    }),
+  await requireUser();
+  const [obra, dayEntries, photos] = await Promise.all([
+    getObraByIdCached(params.id),
+    getDayLogsByObraCached(params.id),
+    getObraPhotosCached(params.id),
   ]);
-
-  // Gera signed URLs em batch no servidor (validade 1h).
-  const paths = photos.map((p) => p.storagePath);
-  const urls = await getSignedUrls(paths);
-  const photosWithUrls = photos.map((p) => ({
-    ...p,
-    signedUrl: urls[p.storagePath] ?? null,
-  }));
+  if (!obra) notFound();
 
   return (
     <div className="space-y-4">
@@ -100,7 +87,7 @@ export default async function ObraDetailPage({
           <DaysTab entries={dayEntries} />
         </TabsContent>
         <TabsContent value="photos">
-          <PhotosTab obraId={obra.id} photos={photosWithUrls} />
+          <PhotosTab obraId={obra.id} photos={photos} />
         </TabsContent>
         <TabsContent value="etapas">
           <ComingSoon name="Etapas" />

@@ -1,11 +1,12 @@
 "use server";
 
 import { z } from "zod";
-import { revalidatePath } from "next/cache";
+import { revalidateTag } from "next/cache";
 import { PhotoAlbum } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/auth";
-import { deletePhoto as storageDelete } from "@/lib/storage";
+import { deletePhoto as storageDelete, thumbPath } from "@/lib/storage";
+import { TAGS } from "@/lib/data/cache";
 
 const PhotoCreateSchema = z.object({
   obraId: z.string().uuid(),
@@ -14,6 +15,37 @@ const PhotoCreateSchema = z.object({
   caption: z.string().optional().nullable(),
   isPortfolio: z.boolean().optional().default(false),
 });
+
+const PhotoBatchSchema = z.object({
+  obraId: z.string().uuid(),
+  album: z.nativeEnum(PhotoAlbum),
+  caption: z.string().optional().nullable(),
+  isPortfolio: z.boolean().optional().default(false),
+  storagePaths: z.array(z.string().min(1)).min(1),
+});
+
+/**
+ * Batch insert das fotos apos o upload paralelo no client.
+ * Uma unica round-trip ao banco em vez de N server actions.
+ */
+export async function createPhotosBatch(
+  input: z.input<typeof PhotoBatchSchema>
+) {
+  await requireUser();
+  const data = PhotoBatchSchema.parse(input);
+  await prisma.obraPhoto.createMany({
+    data: data.storagePaths.map((storagePath) => ({
+      obraId: data.obraId,
+      storagePath,
+      album: data.album,
+      caption: data.caption ?? null,
+      isPortfolio: data.isPortfolio,
+    })),
+  });
+  revalidateTag(TAGS.fotos(data.obraId));
+  revalidateTag(TAGS.obras);
+  revalidateTag(TAGS.obra(data.obraId));
+}
 
 export async function createPhotoRecord(
   input: z.input<typeof PhotoCreateSchema>
@@ -29,18 +61,25 @@ export async function createPhotoRecord(
       isPortfolio: data.isPortfolio,
     },
   });
-  revalidatePath(`/obras/${data.obraId}`);
+  revalidateTag(TAGS.fotos(data.obraId));
+  revalidateTag(TAGS.obras);
+  revalidateTag(TAGS.obra(data.obraId));
 }
 
 export async function deletePhotoById(id: string) {
   await requireUser();
   const photo = await prisma.obraPhoto.delete({ where: { id } });
+  // Remove o arquivo e a thumb (se existir) - falhas silenciosas, o
+  // registro ja saiu do banco.
   try {
     await storageDelete(photo.storagePath);
-  } catch {
-    // arquivo pode nao existir mais - segue o jogo
-  }
-  revalidatePath(`/obras/${photo.obraId}`);
+  } catch {}
+  try {
+    await storageDelete(thumbPath(photo.storagePath));
+  } catch {}
+  revalidateTag(TAGS.fotos(photo.obraId));
+  revalidateTag(TAGS.obras);
+  revalidateTag(TAGS.obra(photo.obraId));
 }
 
 export async function togglePortfolio(id: string, isPortfolio: boolean) {
@@ -49,5 +88,5 @@ export async function togglePortfolio(id: string, isPortfolio: boolean) {
     where: { id },
     data: { isPortfolio },
   });
-  revalidatePath(`/obras/${photo.obraId}`);
+  revalidateTag(TAGS.fotos(photo.obraId));
 }

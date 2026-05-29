@@ -83,6 +83,19 @@ END $$;
 
 
 -- ---------------------------------------------------------------------
+-- 3.5) Indices de performance (idempotentes).
+--      Adicionados na otimizacao geral - rode este bloco se voce subiu
+--      o schema com `prisma db push` (que nao cria estes indices).
+--      Se voce roda `prisma migrate deploy` apos atualizar o schema,
+--      essas indices ja vem da migration e este bloco eh no-op.
+-- ---------------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS "Obra_status_idx"                    ON "Obra"("status");
+CREATE INDEX IF NOT EXISTS "DayLogWorker_dayLogEntryId_idx"     ON "DayLogWorker"("dayLogEntryId");
+CREATE INDEX IF NOT EXISTS "Absence_memberId_date_idx"          ON "Absence"("memberId","date");
+CREATE INDEX IF NOT EXISTS "Payment_memberId_paymentDate_idx"   ON "Payment"("memberId","paymentDate");
+
+
+-- ---------------------------------------------------------------------
 -- 4) Storage: policies para o bucket privado "obra-fotos".
 --    Crie o bucket ANTES de rodar esta secao (via UI, marcado como privado).
 --    Nenhum acesso publico - tudo via signed URL gerada no servidor.
