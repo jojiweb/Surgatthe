@@ -26,8 +26,7 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { createClient } from "@/lib/supabase/browser";
-import { compressImage } from "@/lib/image-compression";
-import { uploadPhotoFromBrowser } from "@/lib/storage";
+import { uploadPhotos } from "@/lib/upload-photos";
 import { createDayLog } from "@/lib/actions/dias";
 import { toast } from "@/lib/hooks/use-toast";
 import { formatBRL, cn } from "@/lib/utils";
@@ -198,7 +197,8 @@ export function DiaStepper({
     const supabase = createClient();
 
     try {
-      // Upload das fotos antes do create
+      // Upload das fotos antes do create. Agrupa por obra para que cada
+      // grupo possa rodar em paralelo via uploadPhotos (pool interno).
       const uploadedPhotos: {
         obraId: string;
         storagePath: string;
@@ -207,21 +207,29 @@ export function DiaStepper({
       }[] = [];
       if (photos.length > 0) {
         setProgress({ done: 0, total: photos.length });
-        for (let i = 0; i < photos.length; i++) {
-          const ph = photos[i];
-          const compressed = await compressImage(ph.file);
-          const { path } = await uploadPhotoFromBrowser(
-            supabase,
-            ph.obraId,
-            compressed
-          );
-          uploadedPhotos.push({
-            obraId: ph.obraId,
-            storagePath: path,
-            album: ph.album,
-            caption: ph.caption || null,
+        const byObra = new Map<string, typeof photos>();
+        for (const p of photos) {
+          const arr = byObra.get(p.obraId) ?? [];
+          arr.push(p);
+          byObra.set(p.obraId, arr);
+        }
+        let globalDone = 0;
+        for (const [oid, group] of Array.from(byObra.entries())) {
+          const files = group.map((g) => g.file);
+          const uploaded = await uploadPhotos(supabase, oid, files, {
+            concurrency: 3,
+            onProgress: (d) =>
+              setProgress({ done: globalDone + d, total: photos.length }),
           });
-          setProgress({ done: i + 1, total: photos.length });
+          uploaded.forEach((u, i) => {
+            uploadedPhotos.push({
+              obraId: oid,
+              storagePath: u.storagePath,
+              album: group[i].album,
+              caption: group[i].caption || null,
+            });
+          });
+          globalDone += group.length;
         }
       }
 

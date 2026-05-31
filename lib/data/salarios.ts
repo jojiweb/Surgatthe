@@ -1,23 +1,6 @@
-"use server";
-
+import { Member } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { requireUser } from "@/lib/auth";
-
-/**
- * Calculo de salario - implementacao COMPLETA ja na Etapa 1.
- *
- *   bruto         = SUM(entries.dailyRateSnapshot * entries.fraction)
- *                   onde existe DayLogWorker.memberId = memberId
- *   descontos     = SUM(absences.discountValue) where memberId
- *   pago          = SUM(payments.amount) where memberId
- *   liquido       = bruto - descontos
- *   saldoDevedor  = liquido - pago
- *
- * Absence e Payment nao tem UI na Etapa 1, suas somas serao 0.
- * A Etapa 2 so adiciona a UI - esta funcao nao muda.
- *
- * Tambem retorna breakdown por obra e historico de dias trabalhados.
- */
+import { cached, TAGS } from "./cache";
 
 export type SalaryResult = {
   memberId: string;
@@ -39,14 +22,15 @@ export type SalaryResult = {
   }>;
 };
 
-export async function calculateSalary(
-  memberId: string,
+/**
+ * Calculo do salario de UM membro. Recebe Member ja carregado e nao
+ * revalida auth - quem chama (entry point) eh responsavel.
+ */
+async function computeSalary(
+  member: Member,
   range?: { from?: Date; to?: Date }
 ): Promise<SalaryResult> {
-  await requireUser();
-
-  const member = await prisma.member.findUniqueOrThrow({ where: { id: memberId } });
-
+  const memberId = member.id;
   const dateFilter =
     range?.from || range?.to
       ? {
@@ -55,18 +39,17 @@ export async function calculateSalary(
         }
       : undefined;
 
-  // Busca todas as entries em que este member trabalhou
   const workerEntries = await prisma.dayLogWorker.findMany({
     where: {
       memberId,
-      ...(dateFilter
-        ? { dayLogEntry: { dayLog: { date: dateFilter } } }
-        : {}),
+      ...(dateFilter ? { dayLogEntry: { dayLog: { date: dateFilter } } } : {}),
     },
-    include: {
+    select: {
       dayLogEntry: {
-        include: {
-          dayLog: true,
+        select: {
+          fraction: true,
+          dailyRateSnapshot: true,
+          dayLog: { select: { id: true, date: true } },
           obra: { select: { id: true, clientName: true } },
         },
       },
@@ -87,15 +70,14 @@ export async function calculateSalary(
     bruto += valor;
     diasSet.add(entry.dayLog.id);
 
-    const obraKey = entry.obra.id;
-    const prev = porObraMap.get(obraKey) ?? {
+    const prev = porObraMap.get(entry.obra.id) ?? {
       obraName: entry.obra.clientName,
       valor: 0,
       dias: 0,
     };
     prev.valor += valor;
     prev.dias += 1;
-    porObraMap.set(obraKey, prev);
+    porObraMap.set(entry.obra.id, prev);
 
     historico.push({
       date: entry.dayLog.date,
@@ -109,20 +91,13 @@ export async function calculateSalary(
 
   historico.sort((a, b) => b.date.getTime() - a.date.getTime());
 
-  // Absences e Payments (UI na Etapa 2) - somas serao 0 enquanto isso.
   const [absencesAgg, paymentsAgg] = await Promise.all([
     prisma.absence.aggregate({
-      where: {
-        memberId,
-        ...(dateFilter ? { date: dateFilter } : {}),
-      },
+      where: { memberId, ...(dateFilter ? { date: dateFilter } : {}) },
       _sum: { discountValue: true },
     }),
     prisma.payment.aggregate({
-      where: {
-        memberId,
-        ...(dateFilter ? { paymentDate: dateFilter } : {}),
-      },
+      where: { memberId, ...(dateFilter ? { paymentDate: dateFilter } : {}) },
       _sum: { amount: true },
     }),
   ]);
@@ -151,12 +126,21 @@ export async function calculateSalary(
   };
 }
 
-export async function getAllMembersSalaries(range?: { from?: Date; to?: Date }) {
-  await requireUser();
-  const members = await prisma.member.findMany({ orderBy: { name: "asc" } });
-  const results: SalaryResult[] = [];
-  for (const m of members) {
-    results.push(await calculateSalary(m.id, range));
-  }
-  return results;
+function rangeKey(range?: { from?: Date; to?: Date }): string {
+  if (!range) return "all";
+  return `${range.from?.toISOString() ?? "-"}_${range.to?.toISOString() ?? "-"}`;
 }
+
+/**
+ * Salario de todos os membros. Cacheado por range.
+ * Invalidado por createDayLog -> revalidateTag("salaries").
+ */
+export const getAllMembersSalariesCached = (range?: { from?: Date; to?: Date }) =>
+  cached(
+    async () => {
+      const members = await prisma.member.findMany({ orderBy: { name: "asc" } });
+      return Promise.all(members.map((m) => computeSalary(m, range)));
+    },
+    ["salaries", rangeKey(range)],
+    [TAGS.salaries, TAGS.members]
+  )();

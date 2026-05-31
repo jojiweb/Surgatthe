@@ -6,12 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { RealtimeWrapper } from "@/components/realtime-wrapper";
-import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/auth";
-import { getAllMembersSalaries } from "@/lib/actions/salarios";
+import {
+  getActiveObrasCached,
+  getNextEndingObraCached,
+} from "@/lib/data/obras";
+import { getAllMembersSalariesCached } from "@/lib/data/salarios";
 import { formatBRL, formatDateLong, pct } from "@/lib/utils";
-
-export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
   await requireUser();
@@ -21,16 +22,9 @@ export default async function DashboardPage() {
   const weekEnd = endOfWeek(now, { weekStartsOn: 1 });
 
   const [obrasAtivas, salariosSemana, proximaObra] = await Promise.all([
-    prisma.obra.findMany({
-      where: { status: "EM_ANDAMENTO" },
-      include: { services: true },
-      orderBy: { createdAt: "desc" },
-    }),
-    getAllMembersSalaries({ from: weekStart, to: weekEnd }),
-    prisma.obra.findFirst({
-      where: { status: "EM_ANDAMENTO", expectedEndDate: { not: null } },
-      orderBy: { expectedEndDate: "asc" },
-    }),
+    getActiveObrasCached(),
+    getAllMembersSalariesCached({ from: weekStart, to: weekEnd }),
+    getNextEndingObraCached(),
   ]);
 
   return (

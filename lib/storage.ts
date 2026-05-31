@@ -26,6 +26,17 @@ export function buildPhotoPath(obraId: string, fileName: string): string {
 }
 
 /**
+ * Convencao: para cada storagePath "{obraId}/{uuid}.jpg" existe um
+ * thumbnail em "{obraId}/{uuid}_thumb.jpg". Manter o calculo em UM
+ * lugar so para nao desincronizar.
+ */
+export function thumbPath(storagePath: string): string {
+  const dot = storagePath.lastIndexOf(".");
+  if (dot === -1) return `${storagePath}_thumb`;
+  return `${storagePath.slice(0, dot)}_thumb${storagePath.slice(dot)}`;
+}
+
+/**
  * Upload do BROWSER. Recebe o supabase client autenticado.
  */
 export async function uploadPhotoFromBrowser(

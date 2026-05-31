@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { ChevronLeft } from "lucide-react";
 import { ObraForm } from "@/components/obras/obra-form";
 import { Button } from "@/components/ui/button";
-import { getObraById } from "@/lib/actions/obras";
+import { getObraByIdCached as getObraById } from "@/lib/data/obras";
 
 export default async function EditarObraPage({
   params,

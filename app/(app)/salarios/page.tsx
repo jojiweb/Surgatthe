@@ -2,13 +2,13 @@ import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { RealtimeWrapper } from "@/components/realtime-wrapper";
-import { getAllMembersSalaries } from "@/lib/actions/salarios";
+import { requireUser } from "@/lib/auth";
+import { getAllMembersSalariesCached } from "@/lib/data/salarios";
 import { formatBRL, formatDate } from "@/lib/utils";
 
-export const dynamic = "force-dynamic";
-
 export default async function SalariosPage() {
-  const salaries = await getAllMembersSalaries();
+  await requireUser();
+  const salaries = await getAllMembersSalariesCached();
 
   return (
     <div className="space-y-4">

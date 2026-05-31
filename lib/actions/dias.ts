@@ -1,10 +1,11 @@
 "use server";
 
 import { z } from "zod";
-import { revalidatePath } from "next/cache";
+import { revalidateTag } from "next/cache";
 import { PhotoAlbum } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/auth";
+import { TAGS } from "@/lib/data/cache";
 
 /**
  * Schema do formulario "Adicionar Dia". Suporta dia dividido entre 2
@@ -145,28 +146,16 @@ export async function createDayLog(input: DayLogInput) {
     return day;
   });
 
-  revalidatePath("/");
-  revalidatePath("/obras");
-  revalidatePath("/salarios");
-  for (const e of data.entries) revalidatePath(`/obras/${e.obraId}`);
+  // Tags afetadas: salarios sempre, e por obra (lista, dias, obra detalhe).
+  revalidateTag(TAGS.salaries);
+  revalidateTag(TAGS.obras);
+  for (const e of data.entries) {
+    revalidateTag(TAGS.obra(e.obraId));
+    revalidateTag(TAGS.dias(e.obraId));
+    if (data.photos.some((p) => p.obraId === e.obraId)) {
+      revalidateTag(TAGS.fotos(e.obraId));
+    }
+  }
 
   return { id: result.id };
-}
-
-export async function getDayLogsByObra(obraId: string) {
-  await requireUser();
-  return prisma.dayLogEntry.findMany({
-    where: { obraId },
-    include: {
-      dayLog: true,
-      workers: { include: { member: true } },
-      serviceProgress: { include: { obraService: true } },
-    },
-    orderBy: { dayLog: { date: "desc" } },
-  });
-}
-
-export async function getMembers() {
-  await requireUser();
-  return prisma.member.findMany({ orderBy: { name: "asc" } });
 }

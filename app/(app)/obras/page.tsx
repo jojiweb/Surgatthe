@@ -7,10 +7,9 @@ import { Progress } from "@/components/ui/progress";
 import { RealtimeWrapper } from "@/components/realtime-wrapper";
 import { StatusBadge } from "@/components/obras/status-badge";
 import { ObrasFilter } from "./obras-filter";
-import { getObras } from "@/lib/actions/obras";
+import { requireUser } from "@/lib/auth";
+import { getObrasCached } from "@/lib/data/obras";
 import { pct } from "@/lib/utils";
-
-export const dynamic = "force-dynamic";
 
 type Search = { status?: string };
 
@@ -19,11 +18,12 @@ export default async function ObrasPage({
 }: {
   searchParams: Search;
 }) {
+  await requireUser();
   const statusFilter =
     searchParams.status && searchParams.status in ObraStatus
       ? (searchParams.status as ObraStatus)
       : undefined;
-  const obras = await getObras({ status: statusFilter });
+  const obras = await getObrasCached(statusFilter);
 
   return (
     <div className="space-y-4">
