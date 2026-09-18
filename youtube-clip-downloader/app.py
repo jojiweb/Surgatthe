@@ -202,7 +202,7 @@ class DownloaderApp:
     def __init__(self, root):
         self.root = root
         root.title("Baixador de Clipes do YouTube")
-        root.geometry("640x660")
+        root.geometry("680x800")
         root.resizable(False, False)
         root.configure(bg=BG)
 
