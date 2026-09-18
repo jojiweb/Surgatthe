@@ -13,8 +13,11 @@ Requer o ffmpeg instalado e disponível no PATH do Windows
 (veja instruções no README.md).
 """
 
+from __future__ import annotations
+
 import os
 import re
+import shutil
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -36,6 +39,46 @@ AUDIO_FORMATS = ["mp3", "m4a", "wav"]
 
 TIME_PATTERN = re.compile(r"^(?:(\d+):)?(\d{1,2}):(\d{2})$|^(\d+)$")
 
+INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def sanitize_filename(name: str) -> str:
+    """Remove caracteres inválidos em nomes de arquivo do Windows e escapa
+    '%' para não ser interpretado como campo de template pelo yt-dlp."""
+    name = INVALID_FILENAME_CHARS.sub("", name).strip(" .")
+    return name.replace("%", "%%")
+
+
+def find_ffmpeg() -> str | None:
+    """Localiza o ffmpeg mesmo quando ele foi instalado (ex: via winget)
+    depois que este processo/terminal já estava aberto: nesses casos o
+    PATH do Windows só é atualizado em janelas de terminal novas, então
+    `shutil.which` sozinho não encontra o executável recém-instalado."""
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+
+    candidates = [
+        os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Links\ffmpeg.exe"),
+        os.path.expandvars(r"%ProgramFiles%\ffmpeg\bin\ffmpeg.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\ffmpeg\bin\ffmpeg.exe"),
+        os.path.expandvars(r"%ChocolateyInstall%\bin\ffmpeg.exe"),
+    ]
+
+    winget_pkgs = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages")
+    if os.path.isdir(winget_pkgs):
+        for entry in os.listdir(winget_pkgs):
+            if entry.lower().startswith("gyan.ffmpeg"):
+                pkg_dir = os.path.join(winget_pkgs, entry)
+                for root_dir, _dirs, files in os.walk(pkg_dir):
+                    if "ffmpeg.exe" in files:
+                        candidates.append(os.path.join(root_dir, "ffmpeg.exe"))
+
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    return None
+
 
 def parse_time(value: str):
     """Aceita HH:MM:SS, MM:SS, ou segundos puros. Retorna segundos (float) ou None."""
@@ -53,12 +96,76 @@ def parse_time(value: str):
     return hours * 3600 + minutes * 60 + seconds
 
 
+class TimeMaskEntry(tk.Entry):
+    """Campo de tempo estilo cronômetro: cada dígito digitado entra pela
+    direita e empurra os anteriores para a esquerda (ex: digitar 4, 2, 5
+    em sequência forma 0:04 -> 0:42 -> 4:25), em vez de só ser acrescentado
+    no fim do texto. O valor inicial fica parado até a primeira tecla ser
+    digitada; a partir daí só os dígitos realmente digitados contam."""
+
+    MAX_DIGITS = 6
+
+    def __init__(self, master, initial="0:00", **kwargs):
+        super().__init__(master, **kwargs)
+        self._placeholder = initial
+        self._digits = ""
+        self._render()
+        self.bind("<Key>", self._on_key)
+        self.bind("<<Paste>>", self._on_paste)
+
+    def _format(self) -> str:
+        if not self._digits:
+            return self._placeholder
+        seconds = self._digits[-2:].zfill(2)
+        rest = self._digits[:-2]
+        if not rest:
+            return f"0:{seconds}"
+        if len(rest) <= 2:
+            return f"{int(rest)}:{seconds}"
+        hours, minutes = rest[:-2], rest[-2:]
+        return f"{int(hours)}:{minutes}:{seconds}"
+
+    def _render(self):
+        self.delete(0, "end")
+        self.insert(0, self._format())
+        self.icursor("end")
+
+    def _on_key(self, event):
+        if event.keysym in ("Tab", "ISO_Left_Tab"):
+            return None
+        if event.keysym == "BackSpace":
+            self._digits = self._digits[:-1]
+            self._render()
+            return "break"
+        if event.keysym in ("Delete", "Escape"):
+            self._digits = ""
+            self._render()
+            return "break"
+        if event.char.isdigit():
+            self._digits = (self._digits + event.char)[-self.MAX_DIGITS:]
+            self._render()
+        return "break"
+
+    def _on_paste(self, event):
+        try:
+            text = self.clipboard_get()
+        except tk.TclError:
+            return "break"
+        digits = "".join(ch for ch in text if ch.isdigit())
+        if digits:
+            self._digits = (self._digits + digits)[-self.MAX_DIGITS:]
+            self._render()
+        return "break"
+
+
 class DownloaderApp:
     def __init__(self, root):
         self.root = root
         root.title("Baixador de Clipes do YouTube")
-        root.geometry("600x540")
+        root.geometry("600x600")
         root.resizable(False, False)
+
+        self.ffmpeg_path = find_ffmpeg()
 
         padding = {"padx": 10, "pady": 6}
 
@@ -104,17 +211,23 @@ class DownloaderApp:
                         command=self._update_fields).grid(row=0, column=0, columnspan=4, sticky="w", padx=10, pady=4)
 
         tk.Label(clip_frame, text="Início:").grid(row=1, column=0, sticky="e", padx=(10, 2))
-        self.start_entry = tk.Entry(clip_frame, width=10)
+        self.start_entry = TimeMaskEntry(clip_frame, initial="0:00", width=10)
         self.start_entry.grid(row=1, column=1, sticky="w", pady=4)
-        self.start_entry.insert(0, "0:00")
 
         tk.Label(clip_frame, text="Fim:").grid(row=1, column=2, sticky="e", padx=(10, 2))
-        self.end_entry = tk.Entry(clip_frame, width=10)
+        self.end_entry = TimeMaskEntry(clip_frame, initial="0:30", width=10)
         self.end_entry.grid(row=1, column=3, sticky="w", pady=4)
-        self.end_entry.insert(0, "0:30")
 
-        tk.Label(clip_frame, text="(formato: MM:SS ou HH:MM:SS)").grid(
+        tk.Label(clip_frame, text="(digite os números; formato MM:SS ou HH:MM:SS)").grid(
             row=2, column=0, columnspan=4, sticky="w", padx=10, pady=(0, 4))
+
+        # Nome do arquivo
+        name_frame = tk.LabelFrame(root, text="Nome do arquivo (opcional)")
+        name_frame.pack(fill="x", **padding)
+        self.filename_var = tk.StringVar(value="")
+        tk.Entry(name_frame, textvariable=self.filename_var, width=40).pack(
+            side="left", padx=10, pady=6, fill="x", expand=True)
+        tk.Label(name_frame, text="Em branco = título do vídeo").pack(side="right", padx=10)
 
         # Pasta de destino
         out_frame = tk.LabelFrame(root, text="Pasta de destino")
@@ -138,6 +251,15 @@ class DownloaderApp:
         self.log_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         self._update_fields()
+
+        if self.ffmpeg_path:
+            self._log(f"ffmpeg encontrado: {self.ffmpeg_path}")
+        else:
+            self._log(
+                "AVISO: ffmpeg não encontrado. Instale com 'winget install ffmpeg' "
+                "e depois FECHE e ABRA este app de novo (o Windows só atualiza o "
+                "PATH em janelas/processos novos)."
+            )
 
     def _update_fields(self):
         mode = self.mode_var.get()
@@ -170,6 +292,17 @@ class DownloaderApp:
             messagebox.showerror("Erro", "Cole um link do YouTube primeiro.")
             return
 
+        if not self.ffmpeg_path:
+            messagebox.showerror(
+                "ffmpeg não encontrado",
+                "O ffmpeg não foi encontrado neste computador.\n\n"
+                "1. Instale com: winget install ffmpeg\n"
+                "2. Feche este app e abra de novo (uma janela/processo já "
+                "aberto não enxerga o PATH atualizado pelo instalador).\n\n"
+                "Veja o README.md para instruções detalhadas.",
+            )
+            return
+
         try:
             start_s = end_s = None
             if self.clip_var.get():
@@ -184,13 +317,15 @@ class DownloaderApp:
         output_dir = self.output_dir_var.get().strip() or DEFAULT_OUTPUT_DIR
         os.makedirs(output_dir, exist_ok=True)
 
+        filename = sanitize_filename(self.filename_var.get())
+
         self.download_btn.config(state="disabled", text="Baixando...")
         self.progress["value"] = 0
         self._log(f"Iniciando download: {url}")
 
         thread = threading.Thread(
             target=self._run_download,
-            args=(url, output_dir, start_s, end_s),
+            args=(url, output_dir, filename, start_s, end_s),
             daemon=True,
         )
         thread.start()
@@ -209,9 +344,10 @@ class DownloaderApp:
         except ValueError:
             pass
 
-    def _run_download(self, url, output_dir, start_s, end_s):
+    def _run_download(self, url, output_dir, filename, start_s, end_s):
         mode = self.mode_var.get()
-        outtmpl = os.path.join(output_dir, "%(title)s.%(ext)s")
+        name_part = filename if filename else "%(title)s"
+        outtmpl = os.path.join(output_dir, f"{name_part}.%(ext)s")
 
         try:
             if mode in ("video", "both"):
@@ -229,6 +365,8 @@ class DownloaderApp:
             "quiet": True,
             "no_warnings": True,
         }
+        if self.ffmpeg_path:
+            opts["ffmpeg_location"] = self.ffmpeg_path
         if start_s is not None and end_s is not None:
             opts["download_ranges"] = download_range_func(None, [(start_s, end_s)])
             opts["force_keyframes_at_cuts"] = True
