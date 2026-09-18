@@ -57,7 +57,7 @@ class DownloaderApp:
     def __init__(self, root):
         self.root = root
         root.title("Baixador de Clipes do YouTube")
-        root.geometry("560x520")
+        root.geometry("600x540")
         root.resizable(False, False)
 
         padding = {"padx": 10, "pady": 6}
@@ -120,9 +120,9 @@ class DownloaderApp:
         out_frame = tk.LabelFrame(root, text="Pasta de destino")
         out_frame.pack(fill="x", **padding)
         self.output_dir_var = tk.StringVar(value=DEFAULT_OUTPUT_DIR)
-        tk.Entry(out_frame, textvariable=self.output_dir_var, width=50).pack(
+        tk.Entry(out_frame, textvariable=self.output_dir_var, width=40).pack(
             side="left", padx=10, pady=6, fill="x", expand=True)
-        tk.Button(out_frame, text="Escolher...", command=self._choose_folder).pack(side="left", padx=10)
+        tk.Button(out_frame, text="Escolher...", command=self._choose_folder).pack(side="right", padx=10)
 
         # Botão baixar
         self.download_btn = tk.Button(root, text="Baixar", command=self._start_download,
