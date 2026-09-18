@@ -226,8 +226,9 @@ class DownloaderApp:
         name_frame.pack(fill="x", **padding)
         self.filename_var = tk.StringVar(value="")
         tk.Entry(name_frame, textvariable=self.filename_var, width=40).pack(
-            side="left", padx=10, pady=6, fill="x", expand=True)
-        tk.Label(name_frame, text="Em branco = título do vídeo").pack(side="right", padx=10)
+            fill="x", padx=10, pady=(6, 0))
+        tk.Label(name_frame, text="Em branco = usa o título do vídeo").pack(
+            anchor="w", padx=10, pady=(0, 6))
 
         # Pasta de destino
         out_frame = tk.LabelFrame(root, text="Pasta de destino")
