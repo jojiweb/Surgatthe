@@ -3,8 +3,9 @@ Baixador de Clipes do YouTube
 =============================
 
 App simples com janela (Tkinter) para baixar vídeo (com áudio) ou só áudio
-do YouTube, com opção de cortar um trecho específico (início/fim). Usa
-yt-dlp + ffmpeg.
+do YouTube, com opção de cortar um trecho específico (início/fim), e para
+comprimir arquivos de vídeo sem perda visível de qualidade. Usa yt-dlp +
+ffmpeg.
 
 Como rodar:
     pip install -r requirements.txt
@@ -20,6 +21,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -43,9 +45,36 @@ RESOLUTIONS = {
 
 AUDIO_FORMATS = ["mp3", "m4a", "wav"]
 
+# CRF = qualidade constante. 18 é o ponto em que o olho não distingue do
+# original ("visualmente sem perdas"); quanto maior, menor o arquivo.
+COMPRESSION_LEVELS = {
+    "Sem perda visível": {"crf": 18, "preset": "slow"},
+    "Alta qualidade (recomendado)": {"crf": 20, "preset": "medium"},
+    "Equilibrado (arquivo bem menor)": {"crf": 23, "preset": "medium"},
+}
+
+VIDEO_CODECS = {
+    "H.264 (compatível com tudo)": "libx264",
+    "H.265 (arquivo menor, mais lento)": "libx265",
+}
+
+# Áudio já comprimido é copiado sem recodificar (zero perda). Outros
+# formatos viram AAC, pois o container .mp4 não aceita qualquer codec.
+MP4_SAFE_AUDIO = {"aac", "mp3", "ac3", "eac3"}
+
+# Chaves que o "ffmpeg -progress pipe:1" imprime; o que não for uma delas
+# é mensagem do ffmpeg e serve para explicar uma eventual falha.
+FFMPEG_PROGRESS_KEYS = {
+    "frame", "fps", "bitrate", "total_size", "out_time", "out_time_ms",
+    "out_time_us", "dup_frames", "drop_frames", "speed", "progress",
+}
+
 TIME_PATTERN = re.compile(r"^(?:(\d+):)?(\d{1,2}):(\d{2})$|^(\d+)$")
 
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+BTN_DOWNLOAD = "⚡ BAIXAR ⚡"
+BTN_COMPRESS = "» COMPRIMIR «"
 
 # --- Paleta cyberpunk ---------------------------------------------------
 BG = "#080b14"
@@ -96,6 +125,33 @@ def find_ffmpeg() -> str | None:
         if path and os.path.isfile(path):
             return path
     return None
+
+
+def find_ffprobe(ffmpeg_path: str | None) -> str | None:
+    """O ffprobe vem junto do ffmpeg, então procura primeiro na mesma pasta."""
+    if ffmpeg_path:
+        sibling = os.path.join(os.path.dirname(ffmpeg_path), "ffprobe.exe")
+        if os.path.isfile(sibling):
+            return sibling
+    return shutil.which("ffprobe")
+
+
+def human_size(num_bytes: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if num_bytes < 1024 or unit == "GB":
+            return f"{num_bytes:.1f} {unit}"
+        num_bytes /= 1024
+    return f"{num_bytes:.1f} GB"
+
+
+def unique_output_path(src: str) -> str:
+    base = os.path.splitext(src)[0]
+    candidate = f"{base}_comprimido.mp4"
+    counter = 2
+    while os.path.exists(candidate):
+        candidate = f"{base}_comprimido_{counter}.mp4"
+        counter += 1
+    return candidate
 
 
 def load_last_output_dir() -> str:
@@ -202,29 +258,64 @@ class DownloaderApp:
     def __init__(self, root):
         self.root = root
         root.title("Baixador de Clipes do YouTube")
-        root.geometry("680x800")
+        root.geometry("680x830")
         root.resizable(False, False)
         root.configure(bg=BG)
 
         self.ffmpeg_path = find_ffmpeg()
+        self.ffprobe_path = find_ffprobe(self.ffmpeg_path)
 
         self._setup_style(root)
-
-        padding = {"padx": 10, "pady": 6}
 
         # Cabeçalho
         tk.Label(root, text="⚡ BAIXADOR DE CLIPES // YT ⚡", bg=BG, fg=ACCENT,
                  font=(FONT, 16, "bold")).pack(pady=(14, 2))
         tk.Frame(root, bg=BORDER, height=2).pack(fill="x", padx=20, pady=(0, 10))
 
-        # URL
-        tk.Label(root, text="Link do YouTube:", bg=BG, fg=TEXT_DIM,
-                 font=(FONT, 9, "bold")).pack(anchor="w", **padding)
-        self.url_entry = self._entry(root, width=70)
-        self.url_entry.pack(fill="x", padx=10)
+        notebook = ttk.Notebook(root, style="Neon.TNotebook")
+        notebook.pack(fill="x", padx=10)
+
+        download_tab = tk.Frame(notebook, bg=BG)
+        compress_tab = tk.Frame(notebook, bg=BG)
+        notebook.add(download_tab, text="BAIXAR")
+        notebook.add(compress_tab, text="COMPRIMIR")
+
+        self._build_download_tab(download_tab)
+        self._build_compress_tab(compress_tab)
+
+        self.progress = ttk.Progressbar(root, mode="determinate", style="Neon.Horizontal.TProgressbar")
+        self.progress.pack(fill="x", padx=10, pady=(10, 0))
+
+        # Log
+        tk.Label(root, text="Status:", bg=BG, fg=TEXT_DIM,
+                 font=(FONT, 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
+        self.log_text = tk.Text(root, height=8, state="disabled", wrap="word",
+                                 bg=FIELD_BG, fg=LOG_FG, insertbackground=LOG_FG,
+                                 font=(FONT, 9), bd=0, highlightthickness=1,
+                                 highlightbackground=BORDER)
+        self.log_text.pack(fill="both", expand=True, padx=10, pady=(4, 10))
+
+        self._update_fields()
+
+        if self.ffmpeg_path:
+            self._log(f"ffmpeg encontrado: {self.ffmpeg_path}")
+        else:
+            self._log(
+                "AVISO: ffmpeg não encontrado. Instale com 'winget install ffmpeg' "
+                "e depois FECHE e ABRA este app de novo (o Windows só atualiza o "
+                "PATH em janelas/processos novos)."
+            )
+
+    def _build_download_tab(self, parent):
+        padding = {"padx": 6, "pady": 6}
+
+        tk.Label(parent, text="Link do YouTube:", bg=BG, fg=TEXT_DIM,
+                 font=(FONT, 9, "bold")).pack(anchor="w", padx=6, pady=(10, 4))
+        self.url_entry = self._entry(parent, width=70)
+        self.url_entry.pack(fill="x", padx=6)
 
         # Modo: vídeo / áudio
-        mode_frame = self._panel(root, "O que baixar")
+        mode_frame = self._panel(parent, "O que baixar")
         mode_frame.pack(fill="x", **padding)
         self.mode_var = tk.StringVar(value="video")
         self._radio(mode_frame, "Vídeo (com áudio)", "video", self.mode_var,
@@ -233,7 +324,7 @@ class DownloaderApp:
                     self._update_fields).pack(side="left", padx=10, pady=4)
 
         # Qualidade
-        quality_frame = self._panel(root, "Qualidade")
+        quality_frame = self._panel(parent, "Qualidade")
         quality_frame.pack(fill="x", **padding)
 
         self.res_label = tk.Label(quality_frame, text="Resolução do vídeo:",
@@ -255,7 +346,7 @@ class DownloaderApp:
         self.audio_fmt_combo.grid(row=1, column=1, sticky="w", padx=10, pady=6)
 
         # Corte de trecho
-        clip_frame = self._panel(root, "Cortar um trecho (opcional)")
+        clip_frame = self._panel(parent, "Cortar um trecho (opcional)")
         clip_frame.pack(fill="x", **padding)
         self.clip_var = tk.BooleanVar(value=False)
         self._check(clip_frame, "Baixar só um trecho do vídeo", self.clip_var,
@@ -276,7 +367,7 @@ class DownloaderApp:
             row=2, column=0, columnspan=4, sticky="w", padx=10, pady=(0, 4))
 
         # Nome do arquivo
-        name_frame = self._panel(root, "Nome do arquivo (opcional)")
+        name_frame = self._panel(parent, "Nome do arquivo (opcional)")
         name_frame.pack(fill="x", **padding)
         self.filename_var = tk.StringVar(value="")
         self._entry(name_frame, textvariable=self.filename_var).pack(
@@ -286,7 +377,7 @@ class DownloaderApp:
             anchor="w", padx=10, pady=(0, 6))
 
         # Pasta de destino
-        out_frame = self._panel(root, "Pasta de destino")
+        out_frame = self._panel(parent, "Pasta de destino")
         out_frame.pack(fill="x", **padding)
         self.output_dir_var = tk.StringVar(value=load_last_output_dir())
         self._entry(out_frame, textvariable=self.output_dir_var).pack(
@@ -294,32 +385,45 @@ class DownloaderApp:
         self._button(out_frame, "Escolher...", self._choose_folder, small=True).pack(
             side="right", padx=10)
 
-        # Botão baixar
-        self.download_btn = self._button(root, "⚡ BAIXAR ⚡", self._start_download)
-        self.download_btn.pack(fill="x", padx=10, pady=(4, 6))
+        self.download_btn = self._button(parent, BTN_DOWNLOAD, self._start_download)
+        self.download_btn.pack(fill="x", padx=6, pady=(6, 10))
 
-        self.progress = ttk.Progressbar(root, mode="determinate", style="Neon.Horizontal.TProgressbar")
-        self.progress.pack(fill="x", padx=10)
+    def _build_compress_tab(self, parent):
+        padding = {"padx": 6, "pady": 6}
 
-        # Log
-        tk.Label(root, text="Status:", bg=BG, fg=TEXT_DIM,
-                 font=(FONT, 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
-        self.log_text = tk.Text(root, height=9, state="disabled", wrap="word",
-                                 bg=FIELD_BG, fg=LOG_FG, insertbackground=LOG_FG,
-                                 font=(FONT, 9), bd=0, highlightthickness=1,
-                                 highlightbackground=BORDER)
-        self.log_text.pack(fill="both", expand=True, padx=10, pady=(4, 10))
+        src_frame = self._panel(parent, "Arquivo de vídeo")
+        src_frame.pack(fill="x", padx=6, pady=(12, 6))
+        self.compress_src_var = tk.StringVar(value="")
+        self._entry(src_frame, textvariable=self.compress_src_var).pack(
+            side="left", padx=10, pady=6, fill="x", expand=True)
+        self._button(src_frame, "Escolher...", self._choose_video, small=True).pack(
+            side="right", padx=10)
 
-        self._update_fields()
+        opts_frame = self._panel(parent, "Compressão")
+        opts_frame.pack(fill="x", **padding)
 
-        if self.ffmpeg_path:
-            self._log(f"ffmpeg encontrado: {self.ffmpeg_path}")
-        else:
-            self._log(
-                "AVISO: ffmpeg não encontrado. Instale com 'winget install ffmpeg' "
-                "e depois FECHE e ABRA este app de novo (o Windows só atualiza o "
-                "PATH em janelas/processos novos)."
-            )
+        tk.Label(opts_frame, text="Qualidade:", bg=PANEL_BG, fg=TEXT,
+                 font=(FONT, 9)).grid(row=0, column=0, sticky="w", padx=10, pady=6)
+        self.comp_level_var = tk.StringVar(value="Alta qualidade (recomendado)")
+        ttk.Combobox(opts_frame, textvariable=self.comp_level_var,
+                     values=list(COMPRESSION_LEVELS.keys()), state="readonly",
+                     width=30, style="Neon.TCombobox").grid(row=0, column=1, sticky="w", padx=10, pady=6)
+
+        tk.Label(opts_frame, text="Codec:", bg=PANEL_BG, fg=TEXT,
+                 font=(FONT, 9)).grid(row=1, column=0, sticky="w", padx=10, pady=6)
+        self.comp_codec_var = tk.StringVar(value="H.264 (compatível com tudo)")
+        ttk.Combobox(opts_frame, textvariable=self.comp_codec_var,
+                     values=list(VIDEO_CODECS.keys()), state="readonly",
+                     width=30, style="Neon.TCombobox").grid(row=1, column=1, sticky="w", padx=10, pady=6)
+
+        tk.Label(opts_frame,
+                 text="O áudio é copiado sem recodificar sempre que possível.\n"
+                      "O arquivo original nunca é apagado nem sobrescrito.",
+                 bg=PANEL_BG, fg=TEXT_DIM, font=(FONT, 8), justify="left").grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 6))
+
+        self.compress_btn = self._button(parent, BTN_COMPRESS, self._start_compress)
+        self.compress_btn.pack(fill="x", padx=6, pady=(6, 10))
 
     # --- helpers de estilo ------------------------------------------------
 
@@ -343,6 +447,13 @@ class DownloaderApp:
                          troughcolor=FIELD_BG, background=ACCENT,
                          bordercolor=BORDER, lightcolor=ACCENT, darkcolor=ACCENT,
                          thickness=14)
+
+        style.configure("Neon.TNotebook", background=BG, borderwidth=0)
+        style.configure("Neon.TNotebook.Tab", background=PANEL_BG, foreground=TEXT_DIM,
+                         padding=[22, 7], font=(FONT, 9, "bold"), borderwidth=0)
+        style.map("Neon.TNotebook.Tab",
+                  background=[("selected", ACCENT)],
+                  foreground=[("selected", "#0a0014")])
 
         root.option_add("*TCombobox*Listbox.background", FIELD_BG)
         root.option_add("*TCombobox*Listbox.foreground", TEXT)
@@ -386,7 +497,7 @@ class DownloaderApp:
         btn.bind("<Leave>", lambda _e: btn.config(bg=ACCENT if btn["state"] != "disabled" else FIELD_BG))
         return btn
 
-    # --- lógica original ---------------------------------------------------
+    # --- estado da interface -----------------------------------------------
 
     def _update_fields(self):
         mode = self.mode_var.get()
@@ -402,17 +513,46 @@ class DownloaderApp:
         self.start_entry.config(state=state)
         self.end_entry.config(state=state)
 
+    def _set_busy(self, busy):
+        """Uma operação de cada vez: baixar e comprimir usam a mesma barra."""
+        for btn, text in ((self.download_btn, BTN_DOWNLOAD), (self.compress_btn, BTN_COMPRESS)):
+            if busy:
+                btn.config(state="disabled", bg=FIELD_BG)
+            else:
+                btn.config(state="normal", text=text, bg=ACCENT)
+
     def _choose_folder(self):
         folder = filedialog.askdirectory()
         if folder:
             self.output_dir_var.set(folder)
             save_last_output_dir(folder)
 
+    def _choose_video(self):
+        path = filedialog.askopenfilename(
+            title="Escolha o vídeo para comprimir",
+            filetypes=[("Vídeos", "*.mp4 *.mkv *.mov *.avi *.webm *.m4v *.wmv *.flv"),
+                       ("Todos os arquivos", "*.*")],
+        )
+        if path:
+            self.compress_src_var.set(path)
+
     def _log(self, message: str):
         self.log_text.config(state="normal")
         self.log_text.insert("end", message + "\n")
         self.log_text.see("end")
         self.log_text.config(state="disabled")
+
+    def _missing_ffmpeg_error(self):
+        messagebox.showerror(
+            "ffmpeg não encontrado",
+            "O ffmpeg não foi encontrado neste computador.\n\n"
+            "1. Instale com: winget install ffmpeg\n"
+            "2. Feche este app e abra de novo (uma janela/processo já "
+            "aberto não enxerga o PATH atualizado pelo instalador).\n\n"
+            "Veja o README.md para instruções detalhadas.",
+        )
+
+    # --- download ----------------------------------------------------------
 
     def _start_download(self):
         url = self.url_entry.get().strip()
@@ -421,14 +561,7 @@ class DownloaderApp:
             return
 
         if not self.ffmpeg_path:
-            messagebox.showerror(
-                "ffmpeg não encontrado",
-                "O ffmpeg não foi encontrado neste computador.\n\n"
-                "1. Instale com: winget install ffmpeg\n"
-                "2. Feche este app e abra de novo (uma janela/processo já "
-                "aberto não enxerga o PATH atualizado pelo instalador).\n\n"
-                "Veja o README.md para instruções detalhadas.",
-            )
+            self._missing_ffmpeg_error()
             return
 
         try:
@@ -448,7 +581,8 @@ class DownloaderApp:
 
         filename = sanitize_filename(self.filename_var.get())
 
-        self.download_btn.config(state="disabled", text="Baixando...", bg=FIELD_BG)
+        self._set_busy(True)
+        self.download_btn.config(text="Baixando...")
         self.progress["value"] = 0
         self._log(f"Iniciando download: {url}")
 
@@ -542,13 +676,163 @@ class DownloaderApp:
     def _on_success(self, output_dir):
         self.progress["value"] = 100
         self._log(f"Concluído! Arquivos salvos em: {output_dir}")
-        self.download_btn.config(state="normal", text="⚡ BAIXAR ⚡", bg=ACCENT)
+        self._set_busy(False)
         messagebox.showinfo("Pronto", f"Download concluído!\nSalvo em:\n{output_dir}")
 
     def _on_error(self, message):
         self._log(f"ERRO: {message}")
-        self.download_btn.config(state="normal", text="⚡ BAIXAR ⚡", bg=ACCENT)
+        self._set_busy(False)
         messagebox.showerror("Erro no download", message)
+
+    # --- compressão --------------------------------------------------------
+
+    def _start_compress(self):
+        src = self.compress_src_var.get().strip().strip('"')
+        if not src:
+            messagebox.showerror("Erro", "Escolha um arquivo de vídeo primeiro.")
+            return
+        if not os.path.isfile(src):
+            messagebox.showerror("Erro", f"Arquivo não encontrado:\n{src}")
+            return
+        if not self.ffmpeg_path:
+            self._missing_ffmpeg_error()
+            return
+
+        level = COMPRESSION_LEVELS[self.comp_level_var.get()]
+        codec = VIDEO_CODECS[self.comp_codec_var.get()]
+        # Para a mesma qualidade percebida, o x265 precisa de um CRF mais
+        # alto que o x264 — sem isso o mesmo rótulo geraria resultados
+        # bem diferentes entre os dois codecs.
+        crf = level["crf"] + (2 if codec == "libx265" else 0)
+
+        dest = unique_output_path(src)
+
+        self._set_busy(True)
+        self.compress_btn.config(text="Comprimindo...")
+        self.progress["value"] = 0
+        self._log(f"Comprimindo: {os.path.basename(src)} ({human_size(os.path.getsize(src))})")
+
+        thread = threading.Thread(
+            target=self._run_compress,
+            args=(src, dest, codec, crf, level["preset"]),
+            daemon=True,
+        )
+        thread.start()
+
+    def _probe_media(self, src):
+        """Retorna (duração em segundos, codec de áudio). Ambos podem ser None."""
+        if not self.ffprobe_path:
+            return None, None
+        try:
+            output = subprocess.run(
+                [self.ffprobe_path, "-v", "quiet", "-print_format", "json",
+                 "-show_format", "-show_streams", src],
+                capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            ).stdout
+            data = json.loads(output)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return None, None
+
+        try:
+            duration = float(data["format"]["duration"])
+        except (KeyError, TypeError, ValueError):
+            duration = None
+
+        audio_codec = None
+        for stream in data.get("streams", []):
+            if stream.get("codec_type") == "audio":
+                audio_codec = stream.get("codec_name")
+                break
+        return duration, audio_codec
+
+    def _run_compress(self, src, dest, codec, crf, preset):
+        try:
+            duration, audio_codec = self._probe_media(src)
+
+            audio_args = (["-c:a", "copy"] if audio_codec in MP4_SAFE_AUDIO
+                          else ["-c:a", "aac", "-b:a", "192k"])
+
+            cmd = [
+                self.ffmpeg_path, "-hide_banner", "-y", "-i", src,
+                "-c:v", codec, "-crf", str(crf), "-preset", preset,
+                *audio_args,
+                "-movflags", "+faststart",
+                "-progress", "pipe:1", "-nostats",
+                dest,
+            ]
+
+            self.root.after(0, self._log,
+                            f"Codec {codec}, CRF {crf}, preset {preset}. Isso pode demorar...")
+
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,  # senão o ffmpeg fica lendo o stdin do app
+                text=True, encoding="utf-8", errors="replace", bufsize=1,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+
+            tail = []
+            for line in proc.stdout:
+                line = line.strip()
+                key, sep, value = line.partition("=")
+                if sep and (key in FFMPEG_PROGRESS_KEYS or key.startswith("stream_")):
+                    if key == "out_time_us" and duration:
+                        try:
+                            pct = min(100.0, int(value) / 1_000_000 / duration * 100)
+                        except ValueError:
+                            continue  # ffmpeg manda "N/A" em alguns blocos
+                        self.root.after(0, self._set_progress_value, pct)
+                elif line:
+                    # Não é linha de progresso: guarda para explicar um erro.
+                    tail.append(line)
+                    del tail[:-25]
+
+            if proc.wait() != 0:
+                raise RuntimeError("O ffmpeg falhou:\n" + "\n".join(tail[-8:]))
+
+            self.root.after(0, self._on_compress_success, src, dest)
+        except Exception as exc:  # noqa: BLE001 - mostrado ao usuário na GUI
+            if os.path.exists(dest):
+                try:
+                    os.remove(dest)  # não deixa arquivo parcial para trás
+                except OSError:
+                    pass
+            self.root.after(0, self._on_compress_error, str(exc))
+
+    def _set_progress_value(self, pct):
+        self.progress["value"] = pct
+
+    def _on_compress_success(self, src, dest):
+        self.progress["value"] = 100
+        before = os.path.getsize(src)
+        after = os.path.getsize(dest)
+
+        if after < before:
+            diff = f"{(1 - after / before) * 100:.0f}% menor"
+            extra = ""
+        else:
+            # Reencodar um vídeo já bem comprimido pode aumentá-lo.
+            diff = f"{(after / before - 1) * 100:.0f}% MAIOR"
+            extra = ("\n\nO original já estava bem comprimido, então recomprimir "
+                     "não ajudou. Vale manter o arquivo original, ou tentar o "
+                     "codec H.265 / uma qualidade mais baixa.")
+
+        self._log(f"Concluído! {human_size(before)} -> {human_size(after)} ({diff})")
+        self._log(f"Salvo em: {dest}")
+        self._set_busy(False)
+        messagebox.showinfo(
+            "Pronto",
+            f"Compressão concluída!\n\n"
+            f"Antes: {human_size(before)}\n"
+            f"Depois: {human_size(after)} ({diff})\n\n"
+            f"Salvo em:\n{dest}{extra}",
+        )
+
+    def _on_compress_error(self, message):
+        self._log(f"ERRO: {message}")
+        self._set_busy(False)
+        messagebox.showerror("Erro na compressão", message)
 
 
 if __name__ == "__main__":
