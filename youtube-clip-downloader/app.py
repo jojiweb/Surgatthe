@@ -23,6 +23,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from yt_dlp import YoutubeDL
+from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
 from yt_dlp.utils import download_range_func
 
 DEFAULT_OUTPUT_DIR = os.path.join(os.path.expanduser("~"), "Videos", "Clipes")
@@ -349,6 +350,14 @@ class DownloaderApp:
         mode = self.mode_var.get()
         name_part = filename if filename else "%(title)s"
         outtmpl = os.path.join(output_dir, f"{name_part}.%(ext)s")
+
+        if self.ffmpeg_path:
+            # yt-dlp's own "is ffmpeg available" check for partial/range
+            # downloads (used when cortando um trecho) ignores the
+            # "ffmpeg_location" YoutubeDL option and only looks at this
+            # contextvar (the yt-dlp CLI sets it the same way). Must be set
+            # from within this thread since contextvars don't cross threads.
+            FFmpegPostProcessor._ffmpeg_location.set(self.ffmpeg_path)
 
         try:
             if mode in ("video", "both"):
