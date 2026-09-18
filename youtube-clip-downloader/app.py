@@ -2,8 +2,9 @@
 Baixador de Clipes do YouTube
 =============================
 
-App simples com janela (Tkinter) para baixar vídeo e/ou áudio do YouTube,
-com opção de cortar um trecho específico (início/fim). Usa yt-dlp + ffmpeg.
+App simples com janela (Tkinter) para baixar vídeo (com áudio) ou só áudio
+do YouTube, com opção de cortar um trecho específico (início/fim). Usa
+yt-dlp + ffmpeg.
 
 Como rodar:
     pip install -r requirements.txt
@@ -15,6 +16,7 @@ Requer o ffmpeg instalado e disponível no PATH do Windows
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -27,6 +29,9 @@ from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
 from yt_dlp.utils import download_range_func
 
 DEFAULT_OUTPUT_DIR = os.path.join(os.path.expanduser("~"), "Videos", "Clipes")
+
+CONFIG_DIR = os.path.join(os.getenv("APPDATA") or os.path.expanduser("~"), "BaixadorDeClipesYT")
+CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 
 RESOLUTIONS = {
     "Melhor disponível": None,
@@ -41,6 +46,18 @@ AUDIO_FORMATS = ["mp3", "m4a", "wav"]
 TIME_PATTERN = re.compile(r"^(?:(\d+):)?(\d{1,2}):(\d{2})$|^(\d+)$")
 
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+# --- Paleta cyberpunk ---------------------------------------------------
+BG = "#080b14"
+PANEL_BG = "#10192e"
+FIELD_BG = "#0b1220"
+BORDER = "#00fff2"
+ACCENT = "#ff2bd6"
+ACCENT_HOVER = "#ff6bea"
+TEXT = "#e8feff"
+TEXT_DIM = "#6fa3c0"
+LOG_FG = "#39ff88"
+FONT = "Consolas"
 
 
 def sanitize_filename(name: str) -> str:
@@ -79,6 +96,28 @@ def find_ffmpeg() -> str | None:
         if path and os.path.isfile(path):
             return path
     return None
+
+
+def load_last_output_dir() -> str:
+    """Lê a última pasta de destino usada, salva na sessão anterior."""
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        saved = data.get("output_dir")
+        if saved:
+            return saved
+    except (OSError, ValueError):
+        pass
+    return DEFAULT_OUTPUT_DIR
+
+
+def save_last_output_dir(path: str) -> None:
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump({"output_dir": path}, f)
+    except OSError:
+        pass
 
 
 def parse_time(value: str):
@@ -163,94 +202,113 @@ class DownloaderApp:
     def __init__(self, root):
         self.root = root
         root.title("Baixador de Clipes do YouTube")
-        root.geometry("600x600")
+        root.geometry("640x660")
         root.resizable(False, False)
+        root.configure(bg=BG)
 
         self.ffmpeg_path = find_ffmpeg()
 
+        self._setup_style(root)
+
         padding = {"padx": 10, "pady": 6}
 
+        # Cabeçalho
+        tk.Label(root, text="⚡ BAIXADOR DE CLIPES // YT ⚡", bg=BG, fg=ACCENT,
+                 font=(FONT, 16, "bold")).pack(pady=(14, 2))
+        tk.Frame(root, bg=BORDER, height=2).pack(fill="x", padx=20, pady=(0, 10))
+
         # URL
-        tk.Label(root, text="Link do YouTube:").pack(anchor="w", **padding)
-        self.url_entry = tk.Entry(root, width=70)
+        tk.Label(root, text="Link do YouTube:", bg=BG, fg=TEXT_DIM,
+                 font=(FONT, 9, "bold")).pack(anchor="w", **padding)
+        self.url_entry = self._entry(root, width=70)
         self.url_entry.pack(fill="x", padx=10)
 
-        # Modo: vídeo / áudio / ambos
-        mode_frame = tk.LabelFrame(root, text="O que baixar")
+        # Modo: vídeo / áudio
+        mode_frame = self._panel(root, "O que baixar")
         mode_frame.pack(fill="x", **padding)
         self.mode_var = tk.StringVar(value="video")
-        tk.Radiobutton(mode_frame, text="Vídeo", variable=self.mode_var,
-                        value="video", command=self._update_fields).pack(side="left", padx=10, pady=4)
-        tk.Radiobutton(mode_frame, text="Áudio", variable=self.mode_var,
-                        value="audio", command=self._update_fields).pack(side="left", padx=10, pady=4)
-        tk.Radiobutton(mode_frame, text="Ambos (vídeo + áudio separado)", variable=self.mode_var,
-                        value="both", command=self._update_fields).pack(side="left", padx=10, pady=4)
+        self._radio(mode_frame, "Vídeo (com áudio)", "video", self.mode_var,
+                    self._update_fields).pack(side="left", padx=10, pady=4)
+        self._radio(mode_frame, "Só áudio", "audio", self.mode_var,
+                    self._update_fields).pack(side="left", padx=10, pady=4)
 
         # Qualidade
-        quality_frame = tk.LabelFrame(root, text="Qualidade")
+        quality_frame = self._panel(root, "Qualidade")
         quality_frame.pack(fill="x", **padding)
 
-        self.res_label = tk.Label(quality_frame, text="Resolução do vídeo:")
+        self.res_label = tk.Label(quality_frame, text="Resolução do vídeo:",
+                                   bg=PANEL_BG, fg=TEXT, font=(FONT, 9))
         self.res_label.grid(row=0, column=0, sticky="w", padx=10, pady=6)
         self.res_var = tk.StringVar(value="Melhor disponível")
         self.res_combo = ttk.Combobox(quality_frame, textvariable=self.res_var,
-                                       values=list(RESOLUTIONS.keys()), state="readonly", width=20)
+                                       values=list(RESOLUTIONS.keys()), state="readonly",
+                                       width=20, style="Neon.TCombobox")
         self.res_combo.grid(row=0, column=1, sticky="w", padx=10, pady=6)
 
-        self.audio_fmt_label = tk.Label(quality_frame, text="Formato de áudio:")
+        self.audio_fmt_label = tk.Label(quality_frame, text="Formato de áudio:",
+                                         bg=PANEL_BG, fg=TEXT, font=(FONT, 9))
         self.audio_fmt_label.grid(row=1, column=0, sticky="w", padx=10, pady=6)
         self.audio_fmt_var = tk.StringVar(value="mp3")
         self.audio_fmt_combo = ttk.Combobox(quality_frame, textvariable=self.audio_fmt_var,
-                                             values=AUDIO_FORMATS, state="readonly", width=20)
+                                             values=AUDIO_FORMATS, state="readonly",
+                                             width=20, style="Neon.TCombobox")
         self.audio_fmt_combo.grid(row=1, column=1, sticky="w", padx=10, pady=6)
 
         # Corte de trecho
-        clip_frame = tk.LabelFrame(root, text="Cortar um trecho (opcional)")
+        clip_frame = self._panel(root, "Cortar um trecho (opcional)")
         clip_frame.pack(fill="x", **padding)
         self.clip_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(clip_frame, text="Baixar só um trecho do vídeo", variable=self.clip_var,
-                        command=self._update_fields).grid(row=0, column=0, columnspan=4, sticky="w", padx=10, pady=4)
+        self._check(clip_frame, "Baixar só um trecho do vídeo", self.clip_var,
+                    self._update_fields).grid(row=0, column=0, columnspan=4, sticky="w", padx=10, pady=4)
 
-        tk.Label(clip_frame, text="Início:").grid(row=1, column=0, sticky="e", padx=(10, 2))
-        self.start_entry = TimeMaskEntry(clip_frame, initial="0:00", width=10)
+        tk.Label(clip_frame, text="Início:", bg=PANEL_BG, fg=TEXT,
+                 font=(FONT, 9)).grid(row=1, column=0, sticky="e", padx=(10, 2))
+        self.start_entry = TimeMaskEntry(clip_frame, initial="0:00", width=10, **self._entry_kwargs())
         self.start_entry.grid(row=1, column=1, sticky="w", pady=4)
 
-        tk.Label(clip_frame, text="Fim:").grid(row=1, column=2, sticky="e", padx=(10, 2))
-        self.end_entry = TimeMaskEntry(clip_frame, initial="0:30", width=10)
+        tk.Label(clip_frame, text="Fim:", bg=PANEL_BG, fg=TEXT,
+                 font=(FONT, 9)).grid(row=1, column=2, sticky="e", padx=(10, 2))
+        self.end_entry = TimeMaskEntry(clip_frame, initial="0:30", width=10, **self._entry_kwargs())
         self.end_entry.grid(row=1, column=3, sticky="w", pady=4)
 
-        tk.Label(clip_frame, text="(digite os números; formato MM:SS ou HH:MM:SS)").grid(
+        tk.Label(clip_frame, text="(digite os números; formato MM:SS ou HH:MM:SS)",
+                 bg=PANEL_BG, fg=TEXT_DIM, font=(FONT, 8)).grid(
             row=2, column=0, columnspan=4, sticky="w", padx=10, pady=(0, 4))
 
         # Nome do arquivo
-        name_frame = tk.LabelFrame(root, text="Nome do arquivo (opcional)")
+        name_frame = self._panel(root, "Nome do arquivo (opcional)")
         name_frame.pack(fill="x", **padding)
         self.filename_var = tk.StringVar(value="")
-        tk.Entry(name_frame, textvariable=self.filename_var, width=40).pack(
+        self._entry(name_frame, textvariable=self.filename_var).pack(
             fill="x", padx=10, pady=(6, 0))
-        tk.Label(name_frame, text="Em branco = usa o título do vídeo").pack(
+        tk.Label(name_frame, text="Em branco = usa o título do vídeo",
+                 bg=PANEL_BG, fg=TEXT_DIM, font=(FONT, 8)).pack(
             anchor="w", padx=10, pady=(0, 6))
 
         # Pasta de destino
-        out_frame = tk.LabelFrame(root, text="Pasta de destino")
+        out_frame = self._panel(root, "Pasta de destino")
         out_frame.pack(fill="x", **padding)
-        self.output_dir_var = tk.StringVar(value=DEFAULT_OUTPUT_DIR)
-        tk.Entry(out_frame, textvariable=self.output_dir_var, width=40).pack(
+        self.output_dir_var = tk.StringVar(value=load_last_output_dir())
+        self._entry(out_frame, textvariable=self.output_dir_var).pack(
             side="left", padx=10, pady=6, fill="x", expand=True)
-        tk.Button(out_frame, text="Escolher...", command=self._choose_folder).pack(side="right", padx=10)
+        self._button(out_frame, "Escolher...", self._choose_folder, small=True).pack(
+            side="right", padx=10)
 
         # Botão baixar
-        self.download_btn = tk.Button(root, text="Baixar", command=self._start_download,
-                                       bg="#c00", fg="white", font=("Segoe UI", 11, "bold"), height=1)
+        self.download_btn = self._button(root, "⚡ BAIXAR ⚡", self._start_download)
         self.download_btn.pack(fill="x", padx=10, pady=(4, 6))
 
-        self.progress = ttk.Progressbar(root, mode="determinate")
+        self.progress = ttk.Progressbar(root, mode="determinate", style="Neon.Horizontal.TProgressbar")
         self.progress.pack(fill="x", padx=10)
 
         # Log
-        tk.Label(root, text="Status:").pack(anchor="w", padx=10)
-        self.log_text = tk.Text(root, height=10, state="disabled", wrap="word")
-        self.log_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        tk.Label(root, text="Status:", bg=BG, fg=TEXT_DIM,
+                 font=(FONT, 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
+        self.log_text = tk.Text(root, height=9, state="disabled", wrap="word",
+                                 bg=FIELD_BG, fg=LOG_FG, insertbackground=LOG_FG,
+                                 font=(FONT, 9), bd=0, highlightthickness=1,
+                                 highlightbackground=BORDER)
+        self.log_text.pack(fill="both", expand=True, padx=10, pady=(4, 10))
 
         self._update_fields()
 
@@ -263,10 +321,77 @@ class DownloaderApp:
                 "PATH em janelas/processos novos)."
             )
 
+    # --- helpers de estilo ------------------------------------------------
+
+    def _setup_style(self, root):
+        style = ttk.Style(root)
+        style.theme_use("clam")
+
+        style.configure("Neon.TCombobox",
+                         fieldbackground=FIELD_BG, background=FIELD_BG, foreground=TEXT,
+                         arrowcolor=ACCENT, bordercolor=BORDER, lightcolor=BORDER,
+                         darkcolor=BORDER, insertcolor=TEXT,
+                         selectbackground=FIELD_BG, selectforeground=TEXT)
+        style.map("Neon.TCombobox",
+                  fieldbackground=[("readonly", FIELD_BG)],
+                  foreground=[("readonly", TEXT)],
+                  background=[("readonly", FIELD_BG)],
+                  selectbackground=[("readonly", FIELD_BG), ("focus", FIELD_BG)],
+                  selectforeground=[("readonly", TEXT), ("focus", TEXT)])
+
+        style.configure("Neon.Horizontal.TProgressbar",
+                         troughcolor=FIELD_BG, background=ACCENT,
+                         bordercolor=BORDER, lightcolor=ACCENT, darkcolor=ACCENT,
+                         thickness=14)
+
+        root.option_add("*TCombobox*Listbox.background", FIELD_BG)
+        root.option_add("*TCombobox*Listbox.foreground", TEXT)
+        root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
+        root.option_add("*TCombobox*Listbox.selectForeground", BG)
+
+    def _panel(self, parent, text):
+        return tk.LabelFrame(parent, text=text, bg=PANEL_BG, fg=BORDER,
+                              font=(FONT, 9, "bold"), bd=0,
+                              highlightthickness=1, highlightbackground=BORDER,
+                              labelanchor="nw")
+
+    def _entry_kwargs(self):
+        return dict(bg=FIELD_BG, fg=TEXT, insertbackground=TEXT, relief="flat",
+                    bd=6, highlightthickness=1, highlightbackground=BORDER,
+                    highlightcolor=ACCENT, font=(FONT, 10))
+
+    def _entry(self, parent, **kwargs):
+        return tk.Entry(parent, **self._entry_kwargs(), **kwargs)
+
+    def _radio(self, parent, text, value, variable, command):
+        return tk.Radiobutton(parent, text=text, value=value, variable=variable,
+                               command=command, bg=PANEL_BG, fg=TEXT,
+                               selectcolor=FIELD_BG, activebackground=PANEL_BG,
+                               activeforeground=ACCENT, font=(FONT, 9),
+                               highlightthickness=0, bd=0)
+
+    def _check(self, parent, text, variable, command):
+        return tk.Checkbutton(parent, text=text, variable=variable, command=command,
+                               bg=PANEL_BG, fg=TEXT, selectcolor=FIELD_BG,
+                               activebackground=PANEL_BG, activeforeground=ACCENT,
+                               font=(FONT, 9), highlightthickness=0, bd=0)
+
+    def _button(self, parent, text, command, small=False):
+        btn = tk.Button(parent, text=text, command=command, bg=ACCENT, fg="#0a0014",
+                         activebackground=ACCENT_HOVER, activeforeground="#0a0014",
+                         font=(FONT, 9 if small else 12, "bold"), bd=0, relief="flat",
+                         highlightthickness=1, highlightbackground=BORDER,
+                         cursor="hand2", padx=10 if small else 0, pady=2 if small else 8)
+        btn.bind("<Enter>", lambda _e: btn.config(bg=ACCENT_HOVER))
+        btn.bind("<Leave>", lambda _e: btn.config(bg=ACCENT if btn["state"] != "disabled" else FIELD_BG))
+        return btn
+
+    # --- lógica original ---------------------------------------------------
+
     def _update_fields(self):
         mode = self.mode_var.get()
-        show_res = mode in ("video", "both")
-        show_audio_fmt = mode in ("audio", "both")
+        show_res = mode == "video"
+        show_audio_fmt = mode == "audio"
         self.res_label.grid_remove() if not show_res else self.res_label.grid()
         self.res_combo.grid_remove() if not show_res else self.res_combo.grid()
         self.audio_fmt_label.grid_remove() if not show_audio_fmt else self.audio_fmt_label.grid()
@@ -281,6 +406,7 @@ class DownloaderApp:
         folder = filedialog.askdirectory()
         if folder:
             self.output_dir_var.set(folder)
+            save_last_output_dir(folder)
 
     def _log(self, message: str):
         self.log_text.config(state="normal")
@@ -318,10 +444,11 @@ class DownloaderApp:
 
         output_dir = self.output_dir_var.get().strip() or DEFAULT_OUTPUT_DIR
         os.makedirs(output_dir, exist_ok=True)
+        save_last_output_dir(output_dir)
 
         filename = sanitize_filename(self.filename_var.get())
 
-        self.download_btn.config(state="disabled", text="Baixando...")
+        self.download_btn.config(state="disabled", text="Baixando...", bg=FIELD_BG)
         self.progress["value"] = 0
         self._log(f"Iniciando download: {url}")
 
@@ -360,10 +487,10 @@ class DownloaderApp:
             FFmpegPostProcessor._ffmpeg_location.set(self.ffmpeg_path)
 
         try:
-            if mode in ("video", "both"):
-                self._download_video(url, outtmpl, start_s, end_s)
-            if mode in ("audio", "both"):
+            if mode == "audio":
                 self._download_audio(url, outtmpl, start_s, end_s)
+            else:
+                self._download_video(url, outtmpl, start_s, end_s)
             self.root.after(0, self._on_success, output_dir)
         except Exception as exc:  # noqa: BLE001 - mostrado ao usuário na GUI
             self.root.after(0, self._on_error, str(exc))
@@ -415,12 +542,12 @@ class DownloaderApp:
     def _on_success(self, output_dir):
         self.progress["value"] = 100
         self._log(f"Concluído! Arquivos salvos em: {output_dir}")
-        self.download_btn.config(state="normal", text="Baixar")
+        self.download_btn.config(state="normal", text="⚡ BAIXAR ⚡", bg=ACCENT)
         messagebox.showinfo("Pronto", f"Download concluído!\nSalvo em:\n{output_dir}")
 
     def _on_error(self, message):
         self._log(f"ERRO: {message}")
-        self.download_btn.config(state="normal", text="Baixar")
+        self.download_btn.config(state="normal", text="⚡ BAIXAR ⚡", bg=ACCENT)
         messagebox.showerror("Erro no download", message)
 
 
