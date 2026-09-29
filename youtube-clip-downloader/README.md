@@ -48,8 +48,9 @@ python app.py
 Isso abre a janela do app:
 
 1. Cole o link do vídeo do YouTube.
-2. Escolha **Vídeo**, **Áudio** ou **Ambos**.
-3. Escolha a resolução do vídeo e/ou o formato de áudio (MP3, M4A ou WAV).
+2. Escolha **Vídeo (com áudio)**, **Vídeo (sem áudio)** ou **Só áudio**.
+3. Escolha a resolução do vídeo (nos dois modos de vídeo) ou o formato de
+   áudio (MP3, M4A ou WAV, no modo só áudio).
 4. Se quiser só um trecho, marque **"Baixar só um trecho do vídeo"** e
    informe o início e o fim. Os campos funcionam como um cronômetro: os
    números digitados entram pela direita e empurram os anteriores (ex:
@@ -57,7 +58,9 @@ Isso abre a janela do app:
    último dígito.
 5. Se quiser, digite um **nome de arquivo** (opcional). Deixe em branco
    para usar o título do vídeo.
-6. Escolha a pasta de destino (padrão: `Vídeos\Clipes` na sua pasta de usuário).
+6. Escolha a pasta de destino. Ela fica salva: na próxima vez que abrir o
+   app, a última pasta usada já vem preenchida (na primeira vez, o padrão
+   é `Vídeos\Clipes` na sua pasta de usuário).
 7. Clique em **Baixar** e acompanhe o progresso no log da própria janela.
 
 ## Dicas
@@ -65,8 +68,8 @@ Isso abre a janela do app:
 - Quando você corta um trecho (início/fim), o `yt-dlp` tenta baixar
   apenas a parte necessária do vídeo (mais rápido), usando o `ffmpeg`
   para cortar com precisão nos keyframes mais próximos.
-- No modo **Ambos**, o app salva um arquivo de vídeo (com áudio, `.mp4`)
-  e, separadamente, um arquivo de áudio extraído no formato escolhido.
+- **Vídeo (sem áudio)** é útil pra quem vai editar o clipe depois e não
+  quer carregar uma faixa de áudio que vai descartar de qualquer forma.
 - Se aparecer erro tipo `ffmpeg not found` ou `WinError 2` **mesmo depois de
   instalar o ffmpeg**, feche completamente o terminal/janela que está
   rodando o app e abra um novo — o Windows só propaga a atualização do

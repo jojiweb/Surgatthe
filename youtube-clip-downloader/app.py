@@ -2,9 +2,9 @@
 Baixador de Clipes do YouTube
 =============================
 
-App simples com janela (Tkinter) para baixar vídeo (com áudio) ou só áudio
-do YouTube, com opção de cortar um trecho específico (início/fim). Usa
-yt-dlp + ffmpeg.
+App simples com janela (Tkinter) para baixar vídeo (com ou sem áudio) ou
+só áudio do YouTube, com opção de cortar um trecho específico (início/
+fim). Usa yt-dlp + ffmpeg.
 
 Como rodar:
     pip install -r requirements.txt
@@ -47,17 +47,18 @@ TIME_PATTERN = re.compile(r"^(?:(\d+):)?(\d{1,2}):(\d{2})$|^(\d+)$")
 
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
-# --- Paleta cyberpunk ---------------------------------------------------
-BG = "#080b14"
-PANEL_BG = "#10192e"
-FIELD_BG = "#0b1220"
-BORDER = "#00fff2"
-ACCENT = "#ff2bd6"
-ACCENT_HOVER = "#ff6bea"
-TEXT = "#e8feff"
-TEXT_DIM = "#6fa3c0"
-LOG_FG = "#39ff88"
-FONT = "Consolas"
+# --- Paleta moderna e minimalista ---------------------------------------
+BG = "#f7f7f8"
+PANEL_BG = "#ffffff"
+FIELD_BG = "#ffffff"
+DISABLED_BG = "#e2e4e8"
+BORDER = "#e2e4e8"
+ACCENT = "#2563eb"
+ACCENT_HOVER = "#1d4ed8"
+TEXT = "#1f2328"
+TEXT_DIM = "#6b7280"
+LOG_FG = "#374151"
+FONT = "Segoe UI"
 
 
 def sanitize_filename(name: str) -> str:
@@ -202,7 +203,7 @@ class DownloaderApp:
     def __init__(self, root):
         self.root = root
         root.title("Baixador de Clipes do YouTube")
-        root.geometry("680x800")
+        root.geometry("600x870")
         root.resizable(False, False)
         root.configure(bg=BG)
 
@@ -213,9 +214,10 @@ class DownloaderApp:
         padding = {"padx": 10, "pady": 6}
 
         # Cabeçalho
-        tk.Label(root, text="⚡ BAIXADOR DE CLIPES // YT ⚡", bg=BG, fg=ACCENT,
-                 font=(FONT, 16, "bold")).pack(pady=(14, 2))
-        tk.Frame(root, bg=BORDER, height=2).pack(fill="x", padx=20, pady=(0, 10))
+        tk.Label(root, text="Baixador de Clipes do YouTube", bg=BG, fg=TEXT,
+                 font=(FONT, 15, "bold")).pack(pady=(20, 2))
+        tk.Label(root, text="Baixe vídeos, áudio ou trechos específicos", bg=BG,
+                 fg=TEXT_DIM, font=(FONT, 9)).pack(pady=(0, 14))
 
         # URL
         tk.Label(root, text="Link do YouTube:", bg=BG, fg=TEXT_DIM,
@@ -228,6 +230,8 @@ class DownloaderApp:
         mode_frame.pack(fill="x", **padding)
         self.mode_var = tk.StringVar(value="video")
         self._radio(mode_frame, "Vídeo (com áudio)", "video", self.mode_var,
+                    self._update_fields).pack(side="left", padx=10, pady=4)
+        self._radio(mode_frame, "Vídeo (sem áudio)", "video_noaudio", self.mode_var,
                     self._update_fields).pack(side="left", padx=10, pady=4)
         self._radio(mode_frame, "Só áudio", "audio", self.mode_var,
                     self._update_fields).pack(side="left", padx=10, pady=4)
@@ -295,7 +299,7 @@ class DownloaderApp:
             side="right", padx=10)
 
         # Botão baixar
-        self.download_btn = self._button(root, "⚡ BAIXAR ⚡", self._start_download)
+        self.download_btn = self._button(root, "Baixar", self._start_download)
         self.download_btn.pack(fill="x", padx=10, pady=(4, 6))
 
         self.progress = ttk.Progressbar(root, mode="determinate", style="Neon.Horizontal.TProgressbar")
@@ -329,7 +333,7 @@ class DownloaderApp:
 
         style.configure("Neon.TCombobox",
                          fieldbackground=FIELD_BG, background=FIELD_BG, foreground=TEXT,
-                         arrowcolor=ACCENT, bordercolor=BORDER, lightcolor=BORDER,
+                         arrowcolor=TEXT_DIM, bordercolor=BORDER, lightcolor=BORDER,
                          darkcolor=BORDER, insertcolor=TEXT,
                          selectbackground=FIELD_BG, selectforeground=TEXT)
         style.map("Neon.TCombobox",
@@ -340,24 +344,24 @@ class DownloaderApp:
                   selectforeground=[("readonly", TEXT), ("focus", TEXT)])
 
         style.configure("Neon.Horizontal.TProgressbar",
-                         troughcolor=FIELD_BG, background=ACCENT,
+                         troughcolor=BORDER, background=ACCENT,
                          bordercolor=BORDER, lightcolor=ACCENT, darkcolor=ACCENT,
-                         thickness=14)
+                         thickness=8)
 
         root.option_add("*TCombobox*Listbox.background", FIELD_BG)
         root.option_add("*TCombobox*Listbox.foreground", TEXT)
         root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
-        root.option_add("*TCombobox*Listbox.selectForeground", BG)
+        root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
 
     def _panel(self, parent, text):
-        return tk.LabelFrame(parent, text=text, bg=PANEL_BG, fg=BORDER,
+        return tk.LabelFrame(parent, text=text, bg=PANEL_BG, fg=TEXT_DIM,
                               font=(FONT, 9, "bold"), bd=0,
                               highlightthickness=1, highlightbackground=BORDER,
                               labelanchor="nw")
 
     def _entry_kwargs(self):
         return dict(bg=FIELD_BG, fg=TEXT, insertbackground=TEXT, relief="flat",
-                    bd=6, highlightthickness=1, highlightbackground=BORDER,
+                    bd=8, highlightthickness=1, highlightbackground=BORDER,
                     highlightcolor=ACCENT, font=(FONT, 10))
 
     def _entry(self, parent, **kwargs):
@@ -367,30 +371,30 @@ class DownloaderApp:
         return tk.Radiobutton(parent, text=text, value=value, variable=variable,
                                command=command, bg=PANEL_BG, fg=TEXT,
                                selectcolor=FIELD_BG, activebackground=PANEL_BG,
-                               activeforeground=ACCENT, font=(FONT, 9),
+                               activeforeground=TEXT, font=(FONT, 9),
                                highlightthickness=0, bd=0)
 
     def _check(self, parent, text, variable, command):
         return tk.Checkbutton(parent, text=text, variable=variable, command=command,
                                bg=PANEL_BG, fg=TEXT, selectcolor=FIELD_BG,
-                               activebackground=PANEL_BG, activeforeground=ACCENT,
+                               activebackground=PANEL_BG, activeforeground=TEXT,
                                font=(FONT, 9), highlightthickness=0, bd=0)
 
     def _button(self, parent, text, command, small=False):
-        btn = tk.Button(parent, text=text, command=command, bg=ACCENT, fg="#0a0014",
-                         activebackground=ACCENT_HOVER, activeforeground="#0a0014",
-                         font=(FONT, 9 if small else 12, "bold"), bd=0, relief="flat",
-                         highlightthickness=1, highlightbackground=BORDER,
-                         cursor="hand2", padx=10 if small else 0, pady=2 if small else 8)
+        btn = tk.Button(parent, text=text, command=command, bg=ACCENT, fg="#ffffff",
+                         activebackground=ACCENT_HOVER, activeforeground="#ffffff",
+                         font=(FONT, 9 if small else 11, "normal" if small else "bold"),
+                         bd=0, relief="flat", highlightthickness=0, cursor="hand2",
+                         padx=14 if small else 0, pady=4 if small else 9)
         btn.bind("<Enter>", lambda _e: btn.config(bg=ACCENT_HOVER))
-        btn.bind("<Leave>", lambda _e: btn.config(bg=ACCENT if btn["state"] != "disabled" else FIELD_BG))
+        btn.bind("<Leave>", lambda _e: btn.config(bg=ACCENT if btn["state"] != "disabled" else DISABLED_BG))
         return btn
 
     # --- lógica original ---------------------------------------------------
 
     def _update_fields(self):
         mode = self.mode_var.get()
-        show_res = mode == "video"
+        show_res = mode in ("video", "video_noaudio")
         show_audio_fmt = mode == "audio"
         self.res_label.grid_remove() if not show_res else self.res_label.grid()
         self.res_combo.grid_remove() if not show_res else self.res_combo.grid()
@@ -448,7 +452,7 @@ class DownloaderApp:
 
         filename = sanitize_filename(self.filename_var.get())
 
-        self.download_btn.config(state="disabled", text="Baixando...", bg=FIELD_BG)
+        self.download_btn.config(state="disabled", text="Baixando...", bg=DISABLED_BG)
         self.progress["value"] = 0
         self._log(f"Iniciando download: {url}")
 
@@ -489,6 +493,8 @@ class DownloaderApp:
         try:
             if mode == "audio":
                 self._download_audio(url, outtmpl, start_s, end_s)
+            elif mode == "video_noaudio":
+                self._download_video_only(url, outtmpl, start_s, end_s)
             else:
                 self._download_video(url, outtmpl, start_s, end_s)
             self.root.after(0, self._on_success, output_dir)
@@ -524,6 +530,17 @@ class DownloaderApp:
         with YoutubeDL(opts) as ydl:
             ydl.download([url])
 
+    def _download_video_only(self, url, outtmpl, start_s, end_s):
+        height = RESOLUTIONS[self.res_var.get()]
+        fmt = f"bestvideo[height<={height}]" if height else "bestvideo"
+
+        opts = self._build_ydl_opts(outtmpl, start_s, end_s)
+        opts["format"] = fmt
+
+        self.root.after(0, self._log, "Baixando vídeo (sem áudio)...")
+        with YoutubeDL(opts) as ydl:
+            ydl.download([url])
+
     def _download_audio(self, url, outtmpl, start_s, end_s):
         audio_fmt = self.audio_fmt_var.get()
 
@@ -542,12 +559,12 @@ class DownloaderApp:
     def _on_success(self, output_dir):
         self.progress["value"] = 100
         self._log(f"Concluído! Arquivos salvos em: {output_dir}")
-        self.download_btn.config(state="normal", text="⚡ BAIXAR ⚡", bg=ACCENT)
+        self.download_btn.config(state="normal", text="Baixar", bg=ACCENT)
         messagebox.showinfo("Pronto", f"Download concluído!\nSalvo em:\n{output_dir}")
 
     def _on_error(self, message):
         self._log(f"ERRO: {message}")
-        self.download_btn.config(state="normal", text="⚡ BAIXAR ⚡", bg=ACCENT)
+        self.download_btn.config(state="normal", text="Baixar", bg=ACCENT)
         messagebox.showerror("Erro no download", message)
 
 
